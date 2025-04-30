@@ -1045,7 +1045,7 @@ Recommended parameters for different market conditions:
 
 The Simple Moving Average is a finite impulse response filter with equal coefficients:
 
-$$\text{SMA}_n(t) = \frac{1}{n}\sum_{i=0}^{n-1} P(t-i)$$
+SMA_n(t) = (1/n) * Σ[i=0 to n-1] P(t-i)
 
 Where:
 - $\text{SMA}_n(t)$ is the moving average at time $t$ with window size $n$
