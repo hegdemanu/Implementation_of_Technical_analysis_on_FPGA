@@ -1013,8 +1013,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ### Online Resources
 
 1. [Investopedia: Moving Averages](https://www.investopedia.com/terms/m/movingaverage.asp)
-2. [FPGA4Trading: Hardware Accelerated Trading](https://fpga4trading.org)
-3. [Xilinx: Financial Applications](https://www.xilinx.com/applications/finance.html)
+2. [imc : how are fpgas used in trading](https://www.imc.com/in/articles/how-are-fpgas-used-in-trading)
+3. [Xilinx: Financial Applications](https://www.amd.com/en/solutions/financial-services.html)
 
 ## Appendix
 
