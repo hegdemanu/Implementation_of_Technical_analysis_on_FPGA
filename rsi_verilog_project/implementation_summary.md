@@ -279,7 +279,64 @@ RSI = 100 * 27 / (27 + 18) = 100 * 27 / 45 = 60
 4. Pipelined architecture for higher throughput
 
 ## 📝 Usage and Integration
+## 🧪 Testing and Verification
 
+### Testbench Overview
+The project includes a comprehensive testbench (`rsi_testbench.v`) that verifies the functionality of the RSI implementation.
+
+### Testbench Architecture
+```verilog
+module rsi_testbench;
+    reg clk = 0, rst = 1, start = 0, new_price = 0;
+    reg [15:0] price_in = 0;
+    wire done;
+    wire [7:0] rsi;
+
+    rsi_fsm uut (
+        .clk(clk),
+        .rst(rst),
+        .start(start),
+        .price_in(price_in),
+        .new_price(new_price),
+        .done(done),
+        .rsi(rsi)
+    );
+
+    always #5 clk = ~clk;
+
+    // Test implementation
+    // ...
+endmodule
+```
+
+### Test Sequence
+1. Initialize system with reset asserted
+2. Generate a test price sequence with alternating gains and losses
+3. De-assert reset and pulse the start signal
+4. Feed each price into the system with the new_price signal
+5. Wait for the done signal to be asserted
+6. Verify the calculated RSI value
+
+### Test Data Pattern
+The testbench uses a specially crafted price sequence where:
+- Starting price: 100
+- Even indices: Price increases by 3
+- Odd indices: Price decreases by 2
+
+This pattern creates a predictable RSI calculation with known gain and loss values.
+
+### Running the Testbench
+The testbench can be executed using standard Verilog simulation tools:
+```
+$ iverilog -o rsi_sim rsi_fsm.v price_fifo.v rsi_testbench.v
+$ vvp rsi_sim
+```
+
+### Expected Results
+With the provided test pattern, the expected RSI value is 60, matching our sample calculation example.
+```
+RSI Value = 60
+```
 ### Module Instantiation
 ```verilog
 rsi_fsm rsi_calculator (
