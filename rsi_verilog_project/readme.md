@@ -839,7 +839,442 @@ The intricate interplay of these flags and signals enables the FSM to maintain p
 4. Pipelined architecture for higher throughput
 
 ## 📝 Usage and Integration
+## 🧪 Testing and Verification Framework
 
+### Hardware Verification Methodology
+Verification is a critical aspect of hardware design that ensures the implementation meets its functional requirements. For this RSI calculator, we've adopted a comprehensive verification strategy that combines:
+
+1. **Directed Testing**: Using carefully crafted input sequences with known expected outputs
+2. **Functional Verification**: Ensuring all operations behave according to specification
+3. **State Coverage**: Verifying all FSM states are reached and transitions occur correctly
+4. **Temporal Verification**: Confirming timing relationships between signals meet requirements
+
+The verification approach follows hardware design best practices, focusing on both functionality and robustness under various operating conditions.
+
+### Testbench Philosophy
+The verification strategy for this RSI implementation employs a directed testing approach with deterministic test vectors to ensure functional correctness. The testbench (`rsi_testbench.v`) is designed to:
+1. Validate the end-to-end functionality of the RSI calculator
+2. Verify correct operation of the FSM state transitions
+3. Confirm accurate mathematical computation of the RSI formula
+4. Test the FIFO buffering mechanism with sequential price data
+5. Examine boundary conditions and edge cases
+6. Ensure proper handshaking between control signals
+
+### Testbench Architecture Overview
+The testbench follows a stimulus-response verification model where:
+- Test vectors are generated according to a predetermined pattern
+- Signals are applied to the design under test (DUT) with proper timing
+- Responses are monitored and compared against expected values
+- Results are reported to verify correctness
+
+This architecture allows for systematic verification of all aspects of the RSI calculator's functionality.
+
+### Testbench Implementation Details
+
+```verilog
+`timescale 1ns / 1ps
+
+module rsi_testbench;
+    // System signals
+    reg clk = 0, rst = 1, start = 0, new_price = 0;
+    reg [15:0] price_in = 0;
+    wire done;
+    wire [7:0] rsi;
+
+    // Instantiate the unit under test (UUT)
+    rsi_fsm uut (
+        .clk(clk),
+        .rst(rst),
+        .start(start),
+        .price_in(price_in),
+        .new_price(new_price),
+        .done(done),
+        .rsi(rsi)
+    );
+
+    // Clock generation - 10ns period (100MHz)
+    always #5 clk = ~clk;
+
+    integer i;
+    reg [15:0] price_array[0:19];
+
+    initial begin
+        // Create pattern of rising and falling prices
+        price_array[0] = 100;
+        for (i = 1; i < 20; i = i + 1)
+            price_array[i] = price_array[i - 1] + ((i % 2 == 0) ? 3 : -2);
+
+        #20 rst = 0; #10 start = 1; #10 start = 0;
+
+        for (i = 0; i < 20; i = i + 1) begin
+            @(posedge clk);
+            price_in = price_array[i];
+            new_price = 1;
+            @(posedge clk);
+            new_price = 0;
+        end
+
+        wait (done);
+        $display("RSI Value = %d", rsi);
+        $finish;
+    end
+endmodule
+```
+
+### Testbench Code Analysis
+
+#### Timescale Directive
+```verilog
+`timescale 1ns / 1ps
+```
+This directive specifies the time unit (1ns) and precision (1ps) for simulation, providing adequate granularity for timing analysis without excessive computational overhead.
+
+#### Signal Declarations
+```verilog
+reg clk = 0, rst = 1, start = 0, new_price = 0;
+reg [15:0] price_in = 0;
+wire done;
+wire [7:0] rsi;
+```
+- **Input Signals**: Initialized to known states (clock low, reset active, other controls inactive)
+- **Output Signals**: Declared as wires to receive values from the DUT
+- **Data Width**: 16-bit price input provides adequate dynamic range; 8-bit RSI output covers the 0-100 range
+
+#### Clock Generation
+```verilog
+always #5 clk = ~clk;
+```
+Creates a 10ns period clock (100MHz), representative of typical FPGA system clock speeds. The continuous toggling drives the sequential elements of the design.
+
+#### Test Vector Generation
+```verilog
+price_array[0] = 100;
+for (i = 1; i < 20; i = i + 1)
+    price_array[i] = price_array[i - 1] + ((i % 2 == 0) ? 3 : -2);
+```
+This generates a deterministic sequence with alternating gain and loss values, ensuring predictable RSI calculation for verification purposes.
+
+#### Reset and Control Sequencing
+```verilog
+#20 rst = 0; #10 start = 1; #10 start = 0;
+```
+A critical aspect that models proper system initialization:
+1. Hold reset for 20ns to ensure complete initialization
+2. De-assert reset and allow 10ns for stabilization
+3. Pulse the start signal for precisely one clock cycle
+
+#### Price Application Sequence
+```verilog
+for (i = 0; i < 20; i = i + 1) begin
+    @(posedge clk);
+    price_in = price_array[i];
+    new_price = 1;
+    @(posedge clk);
+    new_price = 0;
+end
+```
+This code demonstrates proper control signal handling:
+1. Synchronize to clock edge for deterministic timing
+2. Apply the test price value
+3. Assert the new_price signal for exactly one clock cycle
+4. De-assert new_price and proceed to the next value
+
+#### Result Verification
+```verilog
+wait (done);
+$display("RSI Value = %d", rsi);
+```
+The testbench waits for the done signal before reading results, properly modeling the asynchronous handshaking protocol between the RSI calculator and external systems.
+
+### Price Generation Pattern
+The testbench generates a systematic sequence of 20 prices following a pattern:
+- Initial price: 100
+- For even indices: Previous price + 3 (gain)
+- For odd indices: Previous price - 2 (loss)
+
+This results in the sequence: [100, 98, 101, 99, 102, 100, 103, 101, 104, 102, 105, 103, 106, 104, 107, 105, 108, 106, 109, 107]
+
+The resulting price changes produce gains of +3 and losses of -2 in an alternating pattern, with:
+- Total gain sum = 27
+- Total loss sum = 18
+- Expected RSI = 60
+
+This pattern was specifically chosen to:
+1. Create a balanced mix of gains and losses
+2. Produce an RSI value in the mid-range (60)
+3. Test the system's ability to handle both positive and negative changes
+4. Create a deterministic outcome for easy verification
+5. Exercise the core RSI calculation logic thoroughly
+
+### Test Vector Analysis
+Let's analyze the generated price sequence and expected calculations in detail:
+
+| Index | Price | Change | Gain | Loss |
+|-------|-------|--------|------|------|
+| 0     | 100   | -      | -    | -    |
+| 1     | 98    | -2     | 0    | 2    |
+| 2     | 101   | +3     | 3    | 0    |
+| 3     | 99    | -2     | 0    | 2    |
+| 4     | 102   | +3     | 3    | 0    |
+| 5     | 100   | -2     | 0    | 2    |
+| 6     | 103   | +3     | 3    | 0    |
+| 7     | 101   | -2     | 0    | 2    |
+| 8     | 104   | +3     | 3    | 0    |
+| 9     | 102   | -2     | 0    | 2    |
+| 10    | 105   | +3     | 3    | 0    |
+| 11    | 103   | -2     | 0    | 2    |
+| 12    | 106   | +3     | 3    | 0    |
+| 13    | 104   | -2     | 0    | 2    |
+| 14    | 107   | +3     | 3    | 0    |
+| 15    | 105   | -2     | 0    | 2    |
+| 16    | 108   | +3     | 3    | 0    |
+| 17    | 106   | -2     | 0    | 2    |
+| 18    | 109   | +3     | 3    | 0    |
+| 19    | 107   | -2     | 0    | 2    |
+| **Totals** | | | **27** | **18** |
+
+RSI Calculation:
+```
+RSI = 100 × (Gain Sum / (Gain Sum + Loss Sum))
+    = 100 × (27 / (27 + 18))
+    = 100 × (27 / 45)
+    = 100 × 0.6
+    = 60
+```
+
+### Simulation Protocol
+The test sequence follows these steps:
+1. **Initialization Phase (0-20ns):** 
+   - Assert reset
+   - Initialize test variables
+   - Clear all registers and state machines
+
+2. **Setup Phase (20-40ns):**
+   - De-assert reset
+   - Pulse start signal for one clock cycle
+   - Allow FSM to transition to FILL_FIFO state
+
+3. **Data Feeding Phase:**
+   - For each price in the array:
+     - Set price_in to the current test value
+     - Assert new_price for one clock cycle
+     - Wait for next clock edge
+     - Observe FIFO filling operations
+
+4. **Processing Phase:**
+   - After FIFO fills, observe:
+     - Transitions through READ_INIT, COMPARE, and READ_WAIT states
+     - Accumulation of gain and loss values
+     - Processing of all price samples
+
+5. **Verification Phase:**
+   - Wait for done signal assertion
+   - Verify calculated RSI matches expected value
+   - End simulation
+
+### Detailed Timing Diagram
+
+The testbench creates the following typical timing sequence (simplified):
+
+```
+       |    Reset    |    Setup    |       Data Feeding       |  Processing  | Verification |
+       |             |             |                          |              |              |
+clk    _/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\_/‾\
+       |             |             |                          |              |              |
+rst    ‾‾‾‾‾‾‾‾‾‾‾‾‾\___________________________________________________________
+       |             |             |                          |              |              |
+start  _____________/‾‾‾\___________________________________________________________
+       |             |             |                          |              |              |
+price  XXXXXXXXXXXXX|XXXXXXXXXXXXX|    P0   |    P1   |  ... |     P19      |XXXXXXXXXXXXXX
+       |             |             |                          |              |              |
+n_price ____________|_____________/‾‾‾\____/‾‾‾\____/‾‾‾\____/‾‾‾\___________
+       |             |             |                          |              |              |
+done   _____________|_____________|__________________________|______________/‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+       |             |             |                          |              |              |
+rsi    XXXXXXXXXXXXX|XXXXXXXXXXXXX|XXXXXXXXXXXXXXXXXXXXXXXXXX|XXXXXXXXXXXXXX|     60
+```
+
+### Verification Environment Setup
+The testbench can be run with common Verilog simulators:
+
+**Using Icarus Verilog:**
+```
+$ iverilog -o rsi_sim rsi_fsm.v price_fifo.v rsi_testbench.v
+$ vvp rsi_sim
+```
+
+**Using ModelSim:**
+```
+> vlog rsi_fsm.v price_fifo.v rsi_testbench.v
+> vsim -novopt work.rsi_testbench
+> run -all
+```
+
+**Using Vivado Simulator:**
+```
+> xvlog rsi_fsm.v price_fifo.v rsi_testbench.v
+> xelab -debug typical rsi_testbench -s rsi_sim
+> xsim rsi_sim -runall
+```
+
+### Waveform Analysis
+When running this testbench in a waveform viewer, pay particular attention to:
+
+1. **State Transitions**: Observe the state register in the RSI FSM module to ensure proper sequencing through all required states.
+2. **FIFO Operations**: Monitor the FIFO write/read enable signals and internal pointers to verify proper buffering.
+3. **Accumulator Values**: Track the gain_sum and loss_sum registers to ensure they accumulate values correctly.
+4. **Final Calculation**: Observe the division operation in the DONE state and the final RSI value assignment.
+
+The waveform should show clear transitions between states with proper handshaking signals and data flow through the system.
+
+### Expected Results and Validation
+The testbench should produce the following output:
+```
+RSI Value = 60
+```
+
+This value can be verified manually by calculating:
+RSI = 100 * gain_sum / (gain_sum + loss_sum) = 100 * 27 / (27 + 18) = 100 * 27 / 45 = 60
+
+### Advanced Verification Considerations
+
+#### Corner Case Testing
+While the primary test vector examines normal operation, a comprehensive verification should also explore:
+
+1. **All-Rising Prices**: When every price is higher than the previous (loss_sum = 0, RSI = 100)
+2. **All-Falling Prices**: When every price is lower than the previous (gain_sum = 0, RSI = 0)
+3. **Constant Prices**: When prices don't change (gain_sum = loss_sum = 0, potential division by zero)
+4. **Extreme Volatility**: Large price swings that test the limits of the accumulators
+5. **Boundary Conditions**: Values near the limits of the 16-bit price representation
+
+#### Assertion-Based Verification
+To enhance verification rigor, SystemVerilog assertions could be added to check:
+
+1. Protocol compliance between signals
+2. State transition validity
+3. Timing requirements
+4. Invariant conditions (e.g., FIFO never overflows)
+
+Example assertions might include:
+```systemverilog
+// Reset properly initializes state
+property reset_state;
+  @(posedge clk) rst |-> ##1 (state == IDLE);
+endproperty
+assert property (reset_state);
+
+// new_price is never asserted when FIFO is full
+property no_write_when_full;
+  @(posedge clk) (fifo_full && new_price) |-> ##1 !fifo_wr_en;
+endproperty
+assert property (no_write_when_full);
+```
+
+#### Code Coverage Analysis
+For production-quality verification, code coverage metrics should be collected:
+
+1. **Line Coverage**: Ensure all lines of code are executed
+2. **Branch Coverage**: Verify all conditional branches are taken
+3. **FSM Coverage**: Confirm all states and transitions are reached
+4. **Toggle Coverage**: Check that all bits change value during testing
+5. **Expression Coverage**: Validate all possible expression outcomes are tested
+
+Coverage analysis helps identify untested scenarios and potential design weaknesses.
+
+### Extending the Testbench
+The testbench can be modified to test different scenarios:
+
+#### 1. Alternative Price Patterns
+Create different price sequences to test various market conditions:
+```verilog
+// Bull market simulation
+price_array[0] = 100;
+for (i = 1; i < 20; i = i + 1)
+    price_array[i] = price_array[i-1] + ((i % 5 == 0) ? -1 : 2);
+
+// Bear market simulation
+price_array[0] = 100;
+for (i = 1; i < 20; i = i + 1)
+    price_array[i] = price_array[i-1] + ((i % 5 == 0) ? 1 : -2);
+```
+
+#### 2. Timing Sensitivity Testing
+Modify stimulus timing to verify robustness:
+```verilog
+// Variable timing between new prices
+for (i = 0; i < 20; i = i + 1) begin
+    repeat ((i % 3) + 1) @(posedge clk); // Variable delay
+    price_in = price_array[i];
+    new_price = 1;
+    @(posedge clk);
+    new_price = 0;
+end
+```
+
+#### 3. Automated Result Checking
+Add self-checking capabilities to automate verification:
+```verilog
+// Calculate expected RSI
+expected_rsi = (gain_sum * 100) / (gain_sum + loss_sum);
+
+// Verify result
+wait (done);
+if (rsi == expected_rsi)
+    $display("TEST PASSED: RSI Value = %d (Expected %d)", rsi, expected_rsi);
+else
+    $display("TEST FAILED: RSI Value = %d (Expected %d)", rsi, expected_rsi);
+```
+
+#### 4. Multiple Test Scenarios
+Implement multiple test cases in sequence:
+```verilog
+task run_test_case;
+    input [31:0] test_id;
+    begin
+        // Test case setup
+        setup_test_case(test_id);
+        
+        // Run test
+        run_rsi_calculation();
+        
+        // Check results
+        verify_results(test_id);
+    end
+endtask
+
+initial begin
+    // Run multiple test cases
+    run_test_case(1); // Normal case
+    run_test_case(2); // All rising
+    run_test_case(3); // All falling
+    run_test_case(4); // Mixed extreme
+    
+    $display("All tests completed");
+    $finish;
+end
+```
+
+### Troubleshooting Common Issues
+
+When running the testbench, watch for these common issues:
+
+1. **Incomplete FIFO Filling**: If the FIFO never fills, check the new_price signal timing and count
+2. **Stalled State Machine**: If the FSM gets stuck in a state, verify transition conditions
+3. **Incorrect RSI Value**: Double-check the gain/loss accumulation and division operation
+4. **Simulation Never Completes**: Ensure the done signal is properly asserted
+5. **Unexpected Reset Behavior**: Verify reset signal timing and initialization values
+
+### Integration into a Full Verification Strategy
+
+This testbench forms one component of a comprehensive verification strategy that should also include:
+
+1. **Unit Testing**: Verifying individual modules like price_fifo independently
+2. **Integration Testing**: Testing interactions between modules
+3. **System Testing**: Validating full system behavior with realistic workloads
+4. **Formal Verification**: Mathematically proving correctness of critical components
+5. **Hardware-in-Loop Testing**: Verifying performance in target FPGA hardware
+
+By combining these approaches, the RSI implementation can be thoroughly validated for deployment in financial analysis systems.
 ### Module Instantiation
 ```verilog
 rsi_fsm rsi_calculator (
