@@ -18254,8 +18254,76 @@ module error_handling_fsm #(
             endcase
         end
     end
-    
-    // Error handling FSM
-    always @(posedge clk) begin
-        case
-manu was here
+// Error handling FSM
+    always @(posedge clk or posedge rst) begin // Added reset sensitivity
+        if (rst) begin // Reset condition for error FSM
+            error_state <= ERR_NONE;
+            error_code <= 0;
+            error_active <= 0;
+        end else begin
+            case (error_state)
+                ERR_NONE: begin
+                    // Normal operation, main FSM is active
+                    // Error detection happens within the main FSM states
+                end
+
+                ERR_DETECTED: begin
+                    // Error detected by main FSM, signal error
+                    error_active <= 1;
+                    // Optionally pause main FSM or reset it to IDLE
+                    state <= IDLE; // Ensure main FSM stops processing
+                    error_state <= ERR_HANDLING;
+                    $display("[%t] Error detected: code %d", $time, error_code);
+                end
+
+                ERR_HANDLING: begin
+                    // Wait for acknowledgment or implement automatic recovery timeout
+                    // Example: wait for error_ack signal
+                    if (error_ack) begin
+                        error_state <= ERR_RECOVERY;
+                    end
+                    // Could add a timeout counter here
+                    // if (timeout_counter > MAX_WAIT_CYCLES) begin
+                    //     error_state <= ERR_RECOVERY; // Auto-recover after timeout
+                    // end
+                end
+
+                ERR_RECOVERY: begin
+                    // Perform recovery actions based on error code
+                    $display("[%t] Recovering from error: code %d", $time, error_code);
+                    case (error_code)
+                        3'b001: begin // Invalid price
+                            // Option 1: Log and continue, skipping the data point.
+                            // Option 2: Use last valid price or default.
+                            // Option 3: Reset relevant calculation state.
+                            $display("Recovery Action: Skipped invalid price data.");
+                        end
+                        3'b010: begin // Divide by zero
+                            // Option 1: Set result to a default value (e.g., 0 or max).
+                            // Option 2: Use previous valid result.
+                            // Option 3: Signal invalid output.
+                            moving_avg <= 0; // Example: Set output to 0
+                            $display("Recovery Action: Set MA to 0 due to divide by zero attempt.");
+                        end
+                        // Add more error codes and recovery actions as needed
+                        default: begin
+                            // Generic recovery, e.g., reset calculation state
+                            sum <= 0;
+                            moving_avg <= 0;
+                            $display("Recovery Action: Performed generic reset.");
+                        end
+                    endcase
+
+                    // Clear error status and return to normal operation
+                    error_active <= 0;
+                    error_code <= 0;
+                    error_state <= ERR_NONE;
+                    state <= IDLE; // Ensure main FSM is ready to restart from IDLE
+                end
+
+                default: error_state <= ERR_NONE; // Safe default transition
+            endcase
+        end
+    end
+endmodule
+```
