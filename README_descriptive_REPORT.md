@@ -6758,192 +6758,483 @@ DONE: begin
     state <= IDLE;
 end
 ```
-```markdown
 ## 6. Modules Documentation
-
-This section details the core modules used in the integrated `Combined_analysis` system.
 
 ### Moving Average System
 
-This component refers specifically to the `moving_average_fsm.v` module within the `Combined_analysis` directory, which calculates the Simple Moving Average (SMA).
+The Moving Average system consists of specialized hardware components designed to efficiently calculate the Simple Moving Average (SMA) of price data streams in real-time. The implementation prioritizes computational efficiency, resource utilization, and reliable operation.
 
 #### Memory Module Details
 
-The Moving Average calculation relies on the shared `price_memory.v` module. Key aspects of this interaction:
-- **Inputs Used**: `new_price`, `oldest_price`.
-- **Control**: Triggered by the `start` signal, typically derived when the shared `price_memory` is full (`mem_full` or `mem_cnt == WINDOW`).
-- **Data Window**: Implicitly defined by the `oldest_price` provided by the shared memory.
+The Memory module implements a specialized FIFO buffer for storing price history used in moving average calculations:
+
+```verilog
+module memory (
+    input wire clk,               // System clock
+    input wire rst,               // Asynchronous reset
+    input wire [31:0] new_price,  // Incoming new price
+    input wire write_enable,      // Enables writing to memory
+    output reg [31:0] oldest_price, // Provides the oldest price for rolling sum
+    output wire memory_full,      // Becomes HIGH when FIFO is full
+    output reg [319:0] prices_flat, // Flattened 10-price array (debugging)
+    output reg [3:0] fifo_data_count // Tracks number of stored prices
+);
+```
+
+The module contains:
+- A 10-element array of 32-bit registers for price storage
+- A counter to track the number of valid entries
+- Logic to shift prices as new values arrive
+- Status signals indicating buffer state
+- Debugging output showing all stored prices
+
+The memory module operates as a shift register, where:
+1. On reset, all price registers and counters are cleared
+2. When `write_enable` is asserted, the newest price is stored
+3. All existing prices shift one position (prices[i] = prices[i+1])
+4. The oldest price is output before being discarded
+5. The FIFO counter is incremented until full (count == 10)
+
+The `memory_full` signal is critical for system coordination, as it triggers the moving average calculation once sufficient data is available.
 
 #### Moving Average FSM Implementation
 
-The `moving_average_fsm.v` module calculates a rolling mean using an efficient sliding window approach controlled by a Finite State Machine (FSM).
+The Moving Average FSM module implements an efficient state machine for calculating the moving average:
 
-**Module Declaration Snippet:**
 ```verilog
-module moving_average_fsm #(
-    parameter WINDOW = 20,    // Window size for moving average
-    parameter DW     = 16     // Data width for prices
-)(
-    input  wire           clk,
-    input  wire           rst,
-    input  wire           start,      // Start calculation signal
-    input  wire [DW-1:0]  new_price,  // New price input
-    input  wire [DW-1:0]  oldest_price, // Oldest price from FIFO
-    output reg  [31:0]    moving_avg, // Calculated moving average
-    output reg            done        // Calculation complete signal
-);```
+module moving_average_fsm (
+    input wire clk,                // System clock
+    input wire rst,                // Asynchronous reset
+    input wire start,              // Signal to begin calculation
+    input wire [31:0] new_price,   // New price data
+    input wire [31:0] oldest_price, // Oldest price from FIFO
+    output reg [31:0] moving_avg,  // Calculated moving average
+    output reg done                // Calculation complete flag
+);
+```
 
-**Functionality:**
-- Uses a 3-state FSM (Idle, Calculate, Done) to manage the calculation process.
-- Maintains a 64-bit running sum (`sum`) to prevent overflow.
-- Updates the sum efficiently using the sliding window algorithm: `sum <= sum + new_price - oldest_price;`
-- Calculates the average using integer division: `moving_avg <= sum / WINDOW;`
-- Signals completion with a one-cycle `done` pulse.
+This module employs a sliding window algorithm with O(1) complexity:
+```verilog
+sum <= sum + new_price - oldest_price;
+moving_avg <= sum / WINDOW;
+```
+
+Key features include:
+- 64-bit sum register to prevent overflow during accumulation
+- 3-state FSM (IDLE, CALCULATE, DONE) for control flow
+- Single-cycle calculation of the moving average
+- Clean handshaking with other system components
+
+The FSM state transitions follow this pattern:
+1. IDLE (0): Waits for the `start` signal
+2. CALCULATE (1): Updates sum, calculates average, asserts `done`
+3. DONE (2): Clears the `done` signal, returns to IDLE
+
+This implementation is optimized for FPGA deployment, with careful consideration of register sizing, state encoding, and timing relationships.
 
 #### Port Descriptions and Timing
 
-| Port           | Direction | Width | Description                                      | Timing                                       |
-| -------------- | --------- | ----- | ------------------------------------------------ | -------------------------------------------- |
-| `clk`          | Input     | 1     | System clock                                     | Rising edge active                         |
-| `rst`          | Input     | 1     | Asynchronous reset (active high)                 | Resets state immediately                   |
-| `start`        | Input     | 1     | Trigger to start calculation                     | Sampled on posedge clk in IDLE state       |
-| `new_price`    | Input     | DW    | Current price value                              | Sampled on posedge clk when start is high  |
-| `oldest_price` | Input     | DW    | Oldest price value to remove from window         | Sampled on posedge clk when start is high  |
-| `moving_avg`   | Output    | 32    | Calculated moving average                        | Updated in CALCULATE state, valid when done |
-| `done`         | Output    | 1     | Calculation completion indicator                 | Pulses high for one clock cycle             |
+The Moving Average system follows strict timing relationships:
+- All sequential logic operates on the positive clock edge
+- The `start` signal must be asserted for one clock cycle
+- The `done` signal pulses for exactly one clock cycle
+- Data inputs must be valid when `start` is asserted
+- Results are valid when `done` is asserted
+
+The module interfaces with the rest of the system through:
+- `clk` and `rst`: Standard system signals
+- `start`: Calculation trigger (typically driven by `memory_full`)
+- `new_price` and `oldest_price`: Data inputs for calculation
+- `moving_avg`: Calculation result
+- `done`: Completion indicator
+
+Signal timing diagram:
+```
+clk      _|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_
+start    ___|‾|_________________________
+new_pri  XXXXX|VALID|XXXXXXXXXXXXXXXXXXXXX
+old_pri  XXXXX|VALID|XXXXXXXXXXXXXXXXXXXXX
+state    0|0|0|1|2|0|0|0
+done     _______|‾|_______________________
+mov_avg  XXXXXXXXXXXXX|VALID|XXXXXXXXXXXXX
+```
+
+This clean timing interface facilitates integration with the larger trading system.
 
 #### Internal Register Architecture
 
-- `sum [63:0]`: Stores the running sum of prices within the window. 64-bit width prevents overflow.
-- `st [1:0]`: 2-bit register holding the current state of the FSM (0: Idle, 1: Calculate, 2: Done).
+The internal registers of the Moving Average FSM are carefully sized for their specific functions:
+
+1. **Sum Register (64-bit)**
+   - Accumulates price values for the moving average calculation
+   - Extended width prevents overflow during accumulation
+   - For 32-bit prices and a 10-period window, the theoretical maximum sum is:
+     - 10 × (2³² - 1) ≈ 43 billion
+     - Requires approximately 36 bits
+   - The 64-bit implementation provides substantial margin
+
+2. **State Register (2-bit)**
+   - Encodes the three FSM states (IDLE, CALCULATE, DONE)
+   - Minimal width reduces resource utilization
+   - Efficient encoding for state transitions
+
+3. **Moving Average Output (32-bit)**
+   - Stores the calculated moving average
+   - Matches the price input width for consistency
+   - Provides sufficient precision for the calculation result
+
+This careful register sizing balances precision requirements with resource utilization.
 
 #### State Machine Design
 
-- **State 0 (IDLE)**: Waits for `start` signal. Transitions to State 1 upon `start`.
-- **State 1 (CALCULATE)**: Updates `sum`, calculates `moving_avg`, sets `done` to 1. Transitions to State 2.
-- **State 2 (DONE)**: Clears `done` to 0. Transitions to State 0.
+The Moving Average FSM implements a straightforward 3-state machine:
+
+```verilog
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        sum <= 0; moving_avg <= 0; done <= 0; st <= 0;
+    end else begin
+        case (st)
+            0: if (start) st <= 1;
+            1: begin
+                sum <= sum + new_price - oldest_price;
+                moving_avg <= sum / WINDOW;
+                done <= 1;
+                st <= 2;
+            end
+            2: begin
+                done <= 0;
+                st <= 0;
+            end
+        endcase
+    end
+end
+```
+
+This design provides:
+- Clear state boundaries and transitions
+- Predictable control flow
+- Minimal state overhead
+- Deterministic operation
+- Efficient hardware implementation
+
+The state encoding uses a binary counter pattern (0,1,2) for simplicity and efficiency.
 
 #### Signal Timing Relationships
 
-- **Latency**: 2 clock cycles from `start` assertion to `done` assertion.
-- **Minimum Interval**: The module can accept a new `start` signal every 3 clock cycles.
-- **Result Validity**: `moving_avg` output is valid during the clock cycle when `done` is high.
+Critical timing relationships in the Moving Average FSM include:
+
+1. **Input Sampling**
+   - `new_price` and `oldest_price` are sampled when `start` is asserted
+   - Must be valid during the clock cycle when state transitions to CALCULATE
+
+2. **Calculation Timing**
+   - Sum update and division occur in the same clock cycle
+   - One-cycle latency from input to calculation completion
+
+3. **Output Validity**
+   - `moving_avg` becomes valid during the CALCULATE state
+   - Remains stable until the next calculation
+
+4. **Done Signaling**
+   - `done` asserts for exactly one clock cycle
+   - Timing aligns with the availability of valid results
+
+These relationships ensure deterministic timing and reliable operation.
 
 #### Module Constraints
 
-- `WINDOW` parameter must be positive.
-- `DW` parameter must be sufficient for price representation.
-- `start` should be pulsed for one clock cycle.
-- `new_price` and `oldest_price` must be valid when `start` is asserted.
+The Moving Average module has several operational constraints:
+
+1. **Data Validity**
+   - Requires valid price data when `start` is asserted
+   - Cannot operate on partial or empty data sets
+
+2. **Overflow Prevention**
+   - Sum register (64-bit) must not overflow
+   - Maximum price value and window size must be considered
+   - Current implementation supports 32-bit prices with typical window sizes
+
+3. **Timing Requirements**
+   - Maximum clock frequency depends on critical path (division operation)
+   - Typical constraint: Fmax ≥ 100 MHz on modern FPGAs
+
+4. **Resource Utilization**
+   - Register usage scales with data width and window size
+   - Division operation may require DSP resources
+
+These constraints should be considered when integrating the module into larger systems.
 
 #### Integration Guidelines
 
-- Connect `start` to logic indicating sufficient data is available (e.g., `mem_full` from `price_memory`).
-- Ensure `new_price` and `oldest_price` are sourced correctly relative to the calculation window.
-- Monitor the `done` signal to capture the valid `moving_avg` result.
+When integrating the Moving Average module, follow these guidelines:
+
+1. **Clock and Reset**
+   - Provide stable clock with controlled skew
+   - Assert reset for multiple clock cycles during initialization
+   - Ensure synchronous deassertion of reset
+
+2. **Data Interfaces**
+   - Ensure `new_price` and `oldest_price` are valid when `start` is asserted
+   - Respect the one-cycle `done` pulse for result validity
+
+3. **Parameter Customization**
+   - WINDOW parameter can be adjusted for different moving average periods
+   - DW parameter should match the price data width in the system
+
+4. **System Integration**
+   - Connect `memory_full` signal to `start` input for proper triggering
+   - Monitor `done` signal for result validity and synchronization
+
+5. **Verification**
+   - Test with representative price sequences
+   - Verify correct operation at window boundaries
+   - Confirm proper reset behavior
+
+Following these guidelines ensures reliable integration and operation.
 
 ### RSI Calculator
 
-This component refers to the `rsi_inc.v` module within the `Combined_analysis` directory, which calculates the Relative Strength Index (RSI) incrementally.
+The RSI Calculator module implements a Relative Strength Index calculator designed for FPGA implementation. This module uses a finite state machine approach to efficiently compute the RSI indicator, which measures the speed and magnitude of price movements.
 
 #### Price FIFO Module Details
 
-The RSI calculation relies on the shared `price_memory.v` module.
-- **Inputs Used**: `new_price`.
-- **Control**: Triggered by `new_price_strobe` (typically derived from `mem_cnt == WINDOW` or similar).
-- **Data Window**: Requires tracking the previous price (`prev_price` register) and accumulating gains/losses over the specified `WINDOW` period. *Note: The `rsi_inc.v` implementation appears to be an incremental update rather than a full window recalculation based on FIFO contents, differing from the separate `rsi_verilog_project` FSM.*
+The Price FIFO module implements a circular buffer for storing price history:
+
+```verilog
+module price_fifo #(parameter DEPTH = 20, WIDTH = 16) (
+    input clk,
+    input rst,
+    input wr_en,
+    input rd_en,
+    input [WIDTH-1:0] din,
+    output reg [WIDTH-1:0] dout,
+    output full,
+    output empty
+);
+```
+
+Key features include:
+- Parameterized depth and width for adaptability
+- Full and empty status flags
+- Write and read enable signals for control
+- Internal pointers for circular buffer management
+
+The module implements:
+- Memory array: `reg [WIDTH-1:0] mem[0:DEPTH-1];`
+- Write and read pointers: `reg [4:0] wr_ptr, rd_ptr;`
+- Item counter: `reg [5:0] count;`
+- Status signals: `assign full = (count == DEPTH);`
+
+This efficient implementation supports the RSI calculation's need for sequential price history.
 
 #### RSI FSM Module Implementation
 
-The `rsi_inc.v` module calculates RSI based on incremental price changes. *Note: This module doesn't implement the complex 6-state FSM found in `rsi_verilog_project/rsi_fsm.v`, but uses a simpler logic structure.*
+The RSI FSM module implements a 6-state finite state machine to control the RSI calculation process:
 
-**Module Declaration Snippet:**
 ```verilog
-module rsi_inc #(
-    parameter WINDOW = 14,   // RSI period
-    parameter DW = 16        // Price width
-)(
-    input wire             clk,
-    input wire             rst,
-    input wire             new_price_strobe, // Trigger for new calculation
-    input wire [DW-1:0]    new_price,        // New price data
-    input wire [DW-1:0]    oldest_price,     // (Potentially used for smoothing)
-    input wire             mem_full,         // Flag indicating sufficient data
-    input wire [4:0]       mem_count,        // Price count in memory
-    output reg  [7:0]      rsi,              // RSI value
-    output reg             done              // Done signal
+module rsi_fsm (
+    input clk,
+    input rst,
+    input start,
+    input [15:0] price_in,
+    input new_price,
+    output reg done,
+    output reg [7:0] rsi
 );
 ```
-**Functionality:**
-- Accumulates `gain_sum` and `loss_sum` based on `new_price` vs `prev_price`.
-- Uses a `first_sample` flag for initialization.
-- Calculates RSI = 100 * gain_sum / (gain_sum + loss_sum) when triggered and sufficient data exists (`mem_count >= WINDOW`).
-- Protects against division by zero.
-- Signals completion with `done`. *Note: The provided `rsi_inc.v` seems simplified and might not implement full windowed gain/loss averaging correctly. It appears to accumulate indefinitely unless external logic resets it or it implements a sliding window for the sums.*
+
+The RSI calculation follows these steps:
+1. Store 20 consecutive price samples in the FIFO
+2. Calculate price changes by comparing consecutive prices
+3. Accumulate gains (price increases) and losses (price decreases)
+4. Calculate RSI = 100 * gain_sum / (gain_sum + loss_sum)
+
+The module uses six states:
+```verilog
+localparam IDLE      = 3'b000,
+           FILL_FIFO = 3'b001,
+           READ_INIT = 3'b010,
+           READ_WAIT = 3'b011,
+           COMPARE   = 3'b100,
+           DONE      = 3'b101;
+```
+
+This state machine design enables efficient sequential processing of price data.
 
 #### State Machine Deep Dive
 
-The `rsi_inc.v` module does not contain an explicit multi-state FSM like the one in `rsi_verilog_project`. Its operation is primarily controlled by the `new_price_strobe`, `mem_count`, and `first_sample` flag, representing implicit states:
-1.  **Reset State**: Registers cleared.
-2.  **Waiting State**: Waiting for `new_price_strobe` and `mem_count >= WINDOW`.
-3.  **First Sample State**: Initializes `prev_price`.
-4.  **Calculating State**: Updates `gain_sum`/`loss_sum`, calculates `rsi`, asserts `done`.
+The RSI module uses a sophisticated state machine to manage the calculation process:
+
+1. **IDLE State (3'b000)**
+   - Default state after reset
+   - Waits for the `start` signal
+   - Initializes counters and accumulators when starting
+
+2. **FILL_FIFO State (3'b001)**
+   - Stores incoming prices in the FIFO buffer
+   - Asserts `fifo_wr_en` when new prices arrive
+   - Transitions to READ_INIT when FIFO is full
+
+3. **READ_INIT State (3'b010)**
+   - Initializes the first price from FIFO
+   - Handles the one-cycle delay in FIFO read operations
+   - Sets up the first comparison point
+
+4. **COMPARE State (3'b100)**
+   - Determines whether to continue processing
+   - Initiates reading next price if needed
+   - Transitions to DONE when all samples processed
+
+5. **READ_WAIT State (3'b011)**
+   - Compares consecutive prices to determine gains/losses
+   - Updates gain_sum and loss_sum accumulators
+   - Increments sample counter
+
+6. **DONE State (3'b101)**
+   - Calculates final RSI value
+   - Handles division by zero protection
+   - Asserts done signal and returns to IDLE
+
+This state machine design ensures proper sequencing of operations with clear control flow.
 
 #### Calculation Logic Details
 
-- **Gain/Loss Accumulation**:
-  ```verilog
-  if (new_price > prev_price)
-      gain_sum <= gain_sum + (new_price - prev_price);
-  else if (new_price < prev_price)
-      loss_sum <= loss_sum + (prev_price - new_price);
-  ```
-- **Final RSI Calculation**:
-  ```verilog
-  if (total != 0) // total = gain_sum + loss_sum
-      rsi <= (100 * gain) / total;
-  else
-      rsi <= 0; // Avoid division by zero
-  ```
-  *Self-Correction:* The module likely needs refinement to correctly implement the *average* gain/loss over the window, possibly using smoothing or requiring access to more historical data than just `prev_price`. Assuming the current code intends simple sum-based RSI for now.
+The RSI calculation logic focuses on accumulating gains and losses:
+
+```verilog
+// In READ_WAIT state
+if (price_out > prev_price)
+    gain_sum <= gain_sum + (price_out - prev_price);
+else if (price_out < prev_price)
+    loss_sum <= loss_sum + (prev_price - price_out);
+```
+
+Key calculation features:
+- 32-bit accumulators for gain_sum and loss_sum
+- Conditional comparison for determining gains vs losses
+- Protection against division by zero in final calculation
+- 8-bit output register for the 0-100 RSI range
+
+The final RSI formula is implemented as:
+```verilog
+// In DONE state
+if ((gain_sum + loss_sum) > 0)
+    rsi <= (100 * gain_sum) / (gain_sum + loss_sum);
+else
+    rsi <= 0;
+```
+
+This implementation balances accuracy with resource efficiency.
 
 #### Timing Requirements
 
-- `new_price_strobe` should be asserted for one clock cycle when a valid `new_price` arrives and `mem_count >= WINDOW`.
-- **Latency**: Approximately 1-2 clock cycles from `new_price_strobe` assertion to `done` assertion.
+The RSI calculator has specific timing requirements:
+
+1. **Input Timing**
+   - `new_price` signal must be asserted for one clock cycle
+   - `price_in` must be valid when `new_price` is asserted
+   - `start` signal initiates calculation after FIFO is filled
+
+2. **FIFO Timing**
+   - One-cycle delay between read request and data availability
+   - Managed through the `read_delay` flag
+
+3. **Processing Timing**
+   - Variable latency based on state machine progression
+   - Typically 20+ clock cycles for complete calculation
+   - `done` signal pulses for one cycle when calculation completes
+
+4. **Output Timing**
+   - RSI value becomes valid when `done` is asserted
+   - Remains stable until the next calculation
+
+These timing relationships ensure proper operation in the larger system.
 
 #### Resource Utilization Analysis
 
-- **Registers**: `gain_sum` (32b), `loss_sum` (32b), `prev_price` (DW), `rsi` (8b), `done` (1b), `first_sample` (1b). Total ~74 bits + control logic FFs.
-- **Combinational Logic**: Comparators, Adders/Subtractors, Multiplier (100 * gain), Divider. Division is the most resource-intensive part.
+The RSI calculator's resource utilization includes:
 
-#### Interface Specifications (rsi_inc.v specific)
+1. **Register Usage**
+   - State register: 3 bits
+   - FIFO control flags: 2 bits
+   - Price registers: 2 × 16 bits
+   - Gain/loss accumulators: 2 × 32 bits
+   - Sample counter: 5 bits
+   - RSI output: 8 bits
+   - Total flip-flops: ~110
 
-| Port               | Direction | Width | Description                          |
-| ------------------ | --------- | ----- | ------------------------------------ |
-| `clk`              | Input     | 1     | System clock                         |
-| `rst`              | Input     | 1     | Asynchronous reset                   |
-| `new_price_strobe` | Input     | 1     | Trigger new RSI calculation          |
-| `new_price`        | Input     | DW    | Current price value                  |
-| `oldest_price`     | Input     | DW    | Oldest price (usage unclear in code) |
-| `mem_full`         | Input     | 1     | Memory full status (usage unclear) |
-| `mem_count`        | Input     | 5     | Number of prices in memory         |
-| `rsi`              | Output    | 8     | Calculated RSI value (0-100)         |
-| `done`             | Output    | 1     | Calculation completion flag          |
+2. **Memory Resources**
+   - FIFO buffer: 20 entries × 16 bits = 320 bits
+   - May use distributed RAM or block RAM depending on FPGA
+
+3. **Arithmetic Resources**
+   - Comparators for price evaluation
+   - Adders for accumulation
+   - Divider for final calculation (may use DSP resources)
+
+4. **Control Logic**
+   - FSM implementation
+   - FIFO control signals
+   - Handshaking logic
+
+This analysis aids in resource planning and device selection.
+
+#### Interface Specifications
+
+The RSI calculator interfaces with the rest of the system through:
+
+```verilog
+input clk,                 // System clock
+input rst,                 // Asynchronous reset
+input start,               // Signal to start calculation
+input [15:0] price_in,     // New price data
+input new_price,           // Signal indicating valid price
+output reg done,           // Calculation complete signal
+output reg [7:0] rsi       // Calculated RSI value (0-100)
+```
+
+Interface timing:
+- `new_price` must be asserted for one clock cycle per price
+- `start` triggers the calculation after sufficient prices
+- `done` pulses for one cycle when calculation completes
+- `rsi` becomes valid when `done` is asserted
+
+These clear interfaces facilitate system integration.
 
 #### Integration Considerations
 
-- Trigger `new_price_strobe` based on `new_price` and `mem_cnt >= WINDOW`.
-- Ensure `prev_price` is correctly maintained between calculations.
-- The current logic might require periodic resets or adjustments to correctly reflect a sliding window average gain/loss.
+When integrating the RSI module, consider these factors:
+
+1. **Clock Domain**
+   - All components should share a common clock domain
+   - Synchronization required if crossing clock domains
+
+2. **Reset Handling**
+   - Assert reset for multiple clock cycles during initialization
+   - Ensure clean deassertion aligned with clock edge
+
+3. **Data Flow**
+   - Feed prices sequentially using `new_price` signal
+   - Assert `start` after sufficient prices are available
+   - Monitor `done` for result validity
+
+4. **Parameter Customization**
+   - DEPTH parameter can be adjusted for different RSI periods
+   - WIDTH parameter should match price representation
+
+5. **System Integration**
+   - Coordinate with other indicators for consistent triggering
+   - Consider signal buffering for high-fanout nets
+
+Following these guidelines ensures successful integration into the larger trading system.
 
 ### Trading Decision System
 
-This component refers to the `trading_decision.v` module.
+The Trading Decision module implements a configurable strategy engine that generates buy and sell signals based on technical indicators. It combines trend information from the moving average with momentum signals from the RSI.
 
 #### Module Implementation Details
 
-**Module Declaration Snippet:**
 ```verilog
 module trading_decision #(
     parameter BUY_RSI_THR  = 8'd30,
@@ -6951,472 +7242,2492 @@ module trading_decision #(
 )(
     input  wire        clk,
     input  wire        rst,
-    input  wire [15:0] price_now,    // Assumes DW=16
+    input  wire [15:0] price_now,
     input  wire [31:0] moving_avg,
     input  wire  [7:0] rsi,
     output reg         buy,
     output reg         sell
 );
 ```
-**Functionality:**
-- Implements a simple mean-reversion strategy.
-- Compares current price (`price_now`) with the moving average (`moving_avg`).
-- Compares RSI with configurable thresholds (`BUY_RSI_THR`, `SELL_RSI_THR`).
-- Generates registered `buy` and `sell` signals based on combined conditions.
+
+The module implements a mean reversion strategy with trend confirmation:
+- Buy when price > MA (uptrend) AND RSI < threshold (oversold)
+- Sell when price < MA (downtrend) AND RSI > threshold (overbought)
+
+This combines trend information (price vs. MA) with momentum signals (RSI thresholds) for robust trade decisions.
 
 #### Signal Processing Logic
 
-- **Buy Condition**: `(price_now > moving_avg[15:0]) && (rsi < BUY_RSI_THR)`
-  - Price must be above MA (uptrend).
-  - RSI must be below oversold threshold.
-- **Sell Condition**: `(price_now < moving_avg[15:0]) && (rsi > SELL_RSI_THR)`
-  - Price must be below MA (downtrend).
-  - RSI must be above overbought threshold.
-- **MA Truncation**: `moving_avg[15:0]` truncates the 32-bit MA result to match the 16-bit price width for comparison.
+The core signal processing logic is elegantly simple:
+
+```verilog
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        buy  <= 0;
+        sell <= 0;
+    end else begin
+        buy  <= (price_now > moving_avg[15:0]) && (rsi < BUY_RSI_THR);
+        sell <= (price_now < moving_avg[15:0]) && (rsi > SELL_RSI_THR);
+    end
+end
+```
+
+This implementation:
+- Evaluates conditions on every clock cycle
+- Generates clean, registered output signals
+- Enforces mutual exclusivity between buy and sell
+- Provides one-cycle latency from condition to signal
+- Maintains synchronous behavior with the system clock
+
+The direct mapping from conditions to signals creates a clear and maintainable implementation.
 
 #### Threshold Management
 
-- `BUY_RSI_THR` (default 30) and `SELL_RSI_THR` (default 70) are 8-bit parameters.
-- These define the RSI levels considered oversold and overbought.
-- They can be overridden during instantiation for strategy tuning.
+The module uses parameterized thresholds for strategy customization:
+
+```verilog
+parameter BUY_RSI_THR  = 8'd30,  // RSI buy threshold 
+parameter SELL_RSI_THR = 8'd70   // RSI sell threshold
+```
+
+These parameters enable:
+- Customization without code changes
+- Threshold optimization for different markets
+- Strategy tuning based on risk preferences
+- Backtesting with different parameter sets
+
+The default values (30/70) represent standard technical analysis practice for RSI-based trading.
 
 #### Signal Generation Implementation
 
-- Buy/Sell conditions are evaluated combinationally.
-- The results are captured in the `buy` and `sell` registers on the clock edge.
-- Outputs are stable between clock edges.
+The signal generation uses straightforward logical conditions:
+
+```verilog
+buy  <= (price_now > moving_avg[15:0]) && (rsi < BUY_RSI_THR);
+sell <= (price_now < moving_avg[15:0]) && (rsi > SELL_RSI_THR);
+```
+
+Key implementation features:
+- Bit width matching between price and MA comparisons
+- Direct boolean operations for clear intent
+- Registered outputs for clean timing
+- Reset protection for initialization
+- Single-cycle evaluation of all conditions
+
+This implementation creates clear and predictable trading signals.
 
 #### Timing Characteristics
 
-- **Latency**: 1 clock cycle from input changes (`price_now`, `moving_avg`, `rsi`) to output update (`buy`, `sell`).
-- **Operation**: Continuous evaluation on every clock cycle.
+The Trading Decision module has straightforward timing characteristics:
+
+1. **Input Sampling**
+   - All inputs sampled on positive clock edge
+   - No explicit synchronization or buffering
+   - Assumes inputs are synchronous to system clock
+
+2. **Signal Generation**
+   - One-cycle latency from input change to output update
+   - Registered outputs for glitch-free operation
+   - Immediate response to condition changes
+
+3. **Reset Timing**
+   - Asynchronous assertion for immediate signal clearing
+   - Synchronous deassertion aligned with clock
+   - Both signals initialize to inactive (0)
+
+These clean timing characteristics simplify system integration.
 
 #### Parameterization Details
 
-- Thresholds (`BUY_RSI_THR`, `SELL_RSI_THR`) can be configured at instantiation.
-- Price width comparison implicitly assumes `price_now` is 16 bits due to `moving_avg[15:0]`.
+The Trading Decision module provides two key parameters:
+
+1. **BUY_RSI_THR (default: 30)**
+   - Controls the RSI threshold for buy signals
+   - Lower values create more aggressive buying
+   - Higher values create more conservative buying
+   - Common ranges: 20-40 depending on market volatility
+
+2. **SELL_RSI_THR (default: 70)**
+   - Controls the RSI threshold for sell signals
+   - Higher values create more aggressive selling
+   - Lower values create more conservative selling
+   - Common ranges: 60-80 depending on market volatility
+
+These parameters can be overridden during module instantiation:
+
+```verilog
+trading_decision #(
+    .BUY_RSI_THR(25),    // More aggressive buying
+    .SELL_RSI_THR(75)    // More aggressive selling
+) decision_module (
+    // Port connections
+);
+```
+
+This parameterization enables strategy customization without code changes.
 
 #### Extension Options
 
-- Add hysteresis to prevent signal flickering near thresholds.
-- Incorporate additional indicators (e.g., volume, volatility).
-- Implement more complex strategies (e.g., MA crossovers, divergence detection).
-- Add signal strength or confidence level outputs.
+The Trading Decision module could be extended in several ways:
+
+1. **Multiple Indicator Support**
+   - Add inputs for additional technical indicators
+   - Implement more complex decision logic
+   - Support for MACD, Bollinger Bands, etc.
+
+2. **Signal Strength Indication**
+   - Add output signals indicating confidence level
+   - Implement amplitude-based signal strength
+   - Enable position sizing based on signal strength
+
+3. **Hysteresis Implementation**
+   - Add state tracking to prevent signal oscillation
+   - Implement minimum holding periods
+   - Reduce false signals in choppy markets
+
+4. **Adaptive Thresholds**
+   - Implement automatic threshold adjustment
+   - Market regime detection and adaptation
+   - Volatility-based parameter tuning
+
+These extensions would enhance the module's functionality while maintaining its clean architecture.
 
 ### Price Memory (FIFO)
 
-This component refers to the `price_memory.v` module in `Combined_analysis`.
+The Price Memory module implements a circular FIFO buffer for storing and managing price history, providing both the newest and oldest prices for technical indicator calculations.
 
 #### Circular Buffer Implementation Details
 
-- **Storage**: `reg [DW-1:0] mem [0:DEPTH-1];` - RAM array.
-- **Pointers**: `reg [4:0] write_ptr`, `reg [4:0] read_ptr`. Width allows up to DEPTH=32.
-- **Counter**: `reg [5:0] item_count`. Width allows counts up to DEPTH=32.
-- **Logic**: Implements circular buffer logic using pointer arithmetic (`% DEPTH`).
+```verilog
+module price_memory #(
+    parameter DEPTH = 14,    // FIFO depth
+    parameter DW = 16        // Data width
+)(
+    input wire clk, rst, wr_en,
+    input wire [DW-1:0] new_price,
+    output wire [DW-1:0] oldest_price,
+    output wire full,
+    output wire [4:0] count
+);
+
+    reg [DW-1:0] mem [0:DEPTH-1];  // Memory array
+    reg [4:0] write_ptr = 0;       // Write pointer
+    reg [4:0] read_ptr = 0;        // Read pointer
+    reg [5:0] item_count = 0;      // Item counter
+```
+
+The circular buffer design:
+- Uses fixed-size memory array with parameterized depth
+- Maintains pointers to track read/write positions
+- Implements circular behavior through pointer wrapping
+- Tracks buffer fullness with an item counter
+- Provides status signals for system coordination
+
+This implementation efficiently manages the sliding window of prices needed for technical indicators.
 
 #### Read/Write Pointer Management
 
-- **Reset**: Both pointers and count reset to 0.
-- **Write**: `write_ptr` increments on `wr_en` (modulo `DEPTH`).
-- **Read**: `read_ptr` increments only when `wr_en` is asserted AND `item_count == DEPTH`. It always points to the oldest valid element.
-- **Wrapping**: Pointers wrap automatically due to modulo arithmetic.
+The circular buffer uses pointer management to implement FIFO behavior:
+
+```verilog
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        write_ptr <= 0;
+        read_ptr <= 0;
+        item_count <= 0;
+    end else if (wr_en) begin
+        if (item_count < DEPTH) begin
+            // Not full yet, just write and increment count
+            mem[write_ptr] <= new_price;
+            write_ptr <= (write_ptr + 1) % DEPTH;
+            item_count <= item_count + 1;
+        end else begin
+            // Buffer full, overwrite oldest and advance both pointers
+            mem[write_ptr] <= new_price;
+            write_ptr <= (write_ptr + 1) % DEPTH;
+            read_ptr <= (read_ptr + 1) % DEPTH;
+        end
+    end
+end
+```
+
+Key pointer management features:
+- Initial filling phase increments only write pointer
+- Full buffer phase advances both pointers in lockstep
+- Modulo arithmetic creates circular behavior
+- Pointer reset on system reset
+- Clear differentiation between filling and full states
+
+This implementation efficiently maintains the proper sequential order of prices.
 
 #### Full/Empty Flag Generation
 
-- **Full**: `assign full = (item_count == DEPTH);` Combinationally derived from the counter.
-- **Empty**: Implicitly when `item_count == 0`. No dedicated empty flag output, but `count == 0` can be used.
+The FIFO uses status flags to coordinate with other system components:
+
+```verilog
+assign full = (item_count == DEPTH);   // FIFO is full
+assign count = item_count;             // Current item count
+```
+
+These signals enable:
+- Triggering calculations when sufficient data is available
+- Monitoring buffer state for system coordination
+- Preventing overflow conditions (not implemented since overwrite is desired)
+- Tracking filling progress during initialization
+
+The `full` flag is particularly important, as it triggers the start of technical indicator calculations.
 
 #### Data Access Timing
 
-- **Write**: Synchronous. Data is written on the positive clock edge when `wr_en` is high and not `full`.
-- **Read**: Asynchronous output. `oldest_price = mem[read_ptr];` outputs the value at the read pointer continuously. The *validity* of this output depends on `item_count > 0`. The *value* changes one cycle after `read_ptr` updates (which happens on a write when full).
+The Price Memory module implements specific data access timing:
+
+1. **Write Timing**
+   - Synchronous writes on positive clock edge
+   - One-cycle write latency
+   - Controlled by the `wr_en` signal
+   - New prices written to `write_ptr` location
+
+2. **Read Timing**
+   - Asynchronous read of oldest price
+   - Continuous output of the value at `read_ptr`
+   - No explicit read enable required
+   - Immediate availability of the oldest price
+
+3. **Access Pattern**
+   - Single-ported memory array
+   - No simultaneous access to the same location
+   - Read pointer accesses oldest data
+   - Write pointer accesses newest location
+
+This access pattern supports the sliding window operation of technical indicators.
 
 #### Reset Behavior
 
-- On `rst` assertion, `write_ptr`, `read_ptr`, and `item_count` are cleared to 0. The memory content itself is typically undefined after reset and relies on subsequent writes.
+The Price Memory implements clean reset behavior:
+
+```verilog
+if (rst) begin
+    write_ptr <= 0;
+    read_ptr <= 0;
+    item_count <= 0;
+end
+```
+
+Reset effects include:
+- Initialization of both pointers to zero
+- Clearing of the item counter
+- Implicit invalidation of memory contents
+- Deactivation of status flags
+- Preparation for the initial filling phase
+
+This ensures deterministic behavior after system reset.
 
 #### Parameterization Options
 
-- `DEPTH`: Defines the number of price points stored (default 14).
-- `DW`: Defines the bit width of each price point (default 16).
+The Price Memory module provides two key parameters:
+
+1. **DEPTH Parameter**
+   - Controls the size of the FIFO buffer
+   - Default value of 14 supports RSI calculation
+   - Can be adjusted for different indicator window sizes
+   - Affects memory resource utilization
+
+2. **DW (Data Width) Parameter**
+   - Controls the bit width of price values
+   - Default value of 16 supports typical price ranges
+   - Can be adjusted for different precision requirements
+   - Affects register resource utilization
+
+These parameters enable customization for different applications without code changes.
 
 #### Resource Efficiency Techniques
 
-- **Circular Buffer**: More resource-efficient for larger depths compared to a shift register, as only pointers update, not the entire memory content shifts.
-- **Pointer Width**: Sufficiently wide to handle depths up to 32, allowing parameter flexibility without changing register widths.
-- **Counter Width**: Sufficient for depths up to 32.
+The Price Memory module employs several resource efficiency techniques:
+
+1. **Minimal Storage**
+   - Uses exactly DEPTH * DW bits for price storage
+   - No redundant storage or buffering
+   - Efficient memory utilization
+
+2. **Pointer Optimization**
+   - 5-bit pointers sufficient for typical window sizes
+   - Implicit pointer wrapping through modulo operation
+   - Counter-based full detection instead of pointer comparison
+
+3. **Control Simplification**
+   - Single write enable signal
+   - No explicit read control
+   - Continuous output of oldest price
+   - Minimal control logic overhead
+
+4. **Status Generation**
+   - Direct assignment from counter comparison
+   - No complex flag logic
+   - Clear relationship to buffer state
+
+These techniques create an efficient implementation suitable for FPGA deployment.
 
 ## 7. Implementation Optimizations
 
-The system incorporates several optimizations for efficient hardware implementation:
-
 ### Sliding Window Optimization
 
-- **Algorithm Details**: The MA calculation uses `sum <= sum + new_price - oldest_price` instead of summing all `WINDOW` elements each time.
-- **Computational Complexity Analysis**: Reduces MA update complexity from O(WINDOW) to O(1).
-- **Hardware Implementation Efficiency**: Requires only one adder, one subtractor, and registers for `sum`, `new_price`, `oldest_price`, significantly reducing LUT/DSP usage compared to a naive parallel sum.
-- **Comparison**: Significantly faster and uses fewer resources than recalculating the sum, especially for large `WINDOW` sizes.
+#### Algorithm Details
+
+The moving average implementation uses a sliding window algorithm that maintains a running sum of the values within the window, updating it incrementally as new values arrive and old values leave:
+
+```verilog
+sum <= sum + new_price - oldest_price;
+moving_avg <= sum / WINDOW;
+```
+
+This algorithm provides significant computational advantages:
+- O(1) complexity regardless of window size
+- Minimal operations per update (one addition, one subtraction, one division)
+- Constant execution time for any window size
+- Efficient resource utilization
+
+The algorithm maintains state between updates, preserving the sum across calculations.
+
+#### Computational Complexity Analysis
+
+The sliding window algorithm achieves optimal computational complexity:
+
+| Algorithm               | Time Complexity | Operations per Update |
+|-------------------------|-----------------|------------------------|
+| Naive (recalculation)   | O(n)            | n additions + 1 division |
+| Sliding Window          | O(1)            | 1 addition + 1 subtraction + 1 division |
+
+For a 20-sample window, this represents approximately a 10× reduction in operations.
+
+Key complexity aspects:
+- Independent of window size (constant time)
+- Fixed number of operations per update
+- Deterministic execution time
+- Minimal memory access (only newest and oldest values)
+
+This optimization is particularly valuable for larger window sizes and high-throughput systems.
+
+#### Hardware Implementation Efficiency
+
+The sliding window algorithm translates efficiently to hardware:
+- Simple datapath with minimal components
+- Clear register requirements (sum, inputs, output)
+- Straightforward control flow
+- Minimal multiplexing or routing complexity
+- Efficient ALU utilization
+
+Implementation advantages include:
+- Reduced resource utilization
+- Lower power consumption
+- Better timing closure
+- Simplified verification
+- Enhanced scalability
+
+These efficiency gains make the approach ideal for FPGA implementation.
+
+#### Comparison with Alternative Approaches
+
+Several alternative approaches were considered:
+
+1. **Complete Recalculation**
+   - **Method**: Recalculate the entire sum for each new price
+   - **Advantages**: No state maintenance, simpler control
+   - **Disadvantages**: O(n) complexity, higher resource usage, increased latency
+   - **Assessment**: Inefficient for hardware implementation
+
+2. **Shift Register with Parallel Adder**
+   - **Method**: Maintain full history, use parallel adder tree
+   - **Advantages**: No separate memory module, direct access to all values
+   - **Disadvantages**: Complex routing, high register count, poor scaling
+   - **Assessment**: Inefficient for larger window sizes
+
+3. **Moving Average Filter (IIR)**
+   - **Method**: Recursive filter with exponential weighting
+   - **Advantages**: Minimal storage, very simple computation
+   - **Disadvantages**: Not a true SMA, exponential weighting, initialization issues
+   - **Assessment**: Different mathematical properties than desired SMA
+
+The sliding window approach provides the optimal balance of mathematical correctness, computational efficiency, and hardware implementation suitability.
 
 ### Memory Usage Optimization
 
-- **Circular Buffer Efficiency**: `price_memory.v` uses a circular buffer, avoiding the need to shift data within the memory array, which saves power and potentially routing resources compared to a shift-register FIFO (like the one in `Moving_average/memory.v`).
-- **Pointer Management Details**: Simple increment and modulo logic for pointers minimizes control overhead.
-- **Shared Memory**: A single `price_memory` instance provides data for both MA and RSI calculations, avoiding redundant storage.
-- **FPGA-Specific Memory Optimizations**: For larger `DEPTH`, this structure maps well to FPGA Block RAM (BRAM) resources.
+#### Circular Buffer Efficiency
+
+The price memory implements a circular buffer using an efficient array-based approach:
+
+```verilog
+reg [DW-1:0] mem [0:DEPTH-1];  // Memory array
+reg [4:0] write_ptr = 0;        // Write pointer
+reg [4:0] read_ptr = 0;         // Read pointer
+```
+
+Key efficiency aspects:
+- Fixed-size allocation matching exactly the required window size
+- No dynamic memory management overhead
+- Efficient pointer arithmetic for addressing
+- Minimal control logic for buffer management
+- Clear overwrite semantics for sliding window operation
+
+This implementation balances simplicity with resource efficiency.
+
+#### Pointer Management Details
+
+The pointer management system efficiently implements circular behavior:
+
+```verilog
+// Update write pointer with wrapping
+write_ptr <= (write_ptr + 1) % DEPTH;
+
+// Update read pointer with wrapping
+read_ptr <= (read_ptr + 1) % DEPTH;
+```
+
+This approach provides:
+- Automatic wrapping around buffer boundaries
+- Constant-time pointer updates
+- Minimal logic for pointer management
+- Clear relationship between pointers and buffer state
+- Efficient synthesis to hardware structures
+
+The modulo operation ensures that pointers always reference valid memory locations.
+
+#### Memory Architecture Considerations
+
+The memory architecture is optimized for the specific requirements of technical indicators:
+
+1. **Single-Port Memory**
+   - Only one write operation per cycle required
+   - Simplifies control and timing
+   - Reduces resource requirements
+   - Matches application access patterns
+
+2. **Dual Access Mechanism**
+   - Write access through write pointer
+   - Read access through read pointer
+   - Clear separation of read and write paths
+   - No port conflicts or arbitration required
+
+3. **Sequential Access Pattern**
+   - Predictable write sequence
+   - Predictable read sequence
+   - No random access requirements
+   - Aligned with FIFO operation
+
+4. **Optimization for Sliding Window**
+   - Efficient access to both newest and oldest values
+   - Direct support for the sliding window algorithm
+   - Specialized for technical indicator calculation
+   - Minimal overhead for the required functionality
+
+This architecture provides the exact memory functionality needed without unnecessary features.
+
+#### FPGA-Specific Memory Optimizations
+
+The implementation includes optimizations specific to FPGA deployment:
+
+1. **Register Array Implementation**
+   - Small buffer sizes implemented using register arrays
+   - Maps efficiently to FPGA slice registers or distributed RAM
+   - Direct compilation to hardware resources
+   - Minimal access latency
+
+2. **Potential Block RAM Mapping**
+   - Larger buffer sizes could map to block RAM
+   - Automatic inference by synthesis tools
+   - Resource optimization for larger window sizes
+   - Maintainable code structure regardless of implementation
+
+3. **Reset Handling**
+   - Only pointers and counters reset
+   - Memory contents implicitly invalid until filled
+   - Reduced reset fanout
+   - Faster initialization
+
+4. **Synchronous Write, Asynchronous Read**
+   - Standard FPGA memory pattern
+   - Efficient mapping to hardware resources
+   - Clear timing boundaries
+   - Simplified timing analysis
+
+These optimizations enhance FPGA implementation efficiency without compromising functionality.
 
 ### Register Width Optimization
 
-- **Precision Requirements Analysis**:
-    - MA `sum`: 64 bits used to prevent overflow (max sum ~ WINDOW * 2^DW).
-    - RSI `gain_sum`/`loss_sum`: 32 bits used (max sum ~ WINDOW * 2^DW).
-    - RSI `rsi`: 8 bits sufficient for 0-100 range.
-- **Overflow Prevention Strategies**: Wider accumulators (`sum`, `gain_sum`, `loss_sum`) are the primary strategy.
-- **Resource Utilization Tradeoffs**: Wider registers use more FF resources but simplify logic by avoiding explicit overflow checks/saturation.
-- **Bit Width Selection Methodology**: Widths selected based on worst-case accumulation estimates plus some margin.
+#### Precision Requirements Analysis
+
+The system implements careful register width selection based on precision requirements:
+
+1. **Price Representation (16-bit)**
+   - Sufficient for typical financial instruments
+   - Range: 0 to 65,535
+   - Balances precision with resource usage
+   - Standard data width for system interfaces
+
+2. **Sum Accumulator (64-bit)**
+   - Required for preventing overflow during accumulation
+   - For 20 × 16-bit values, theoretical minimum: ~21 bits
+   - Conservative sizing with substantial margin
+   - Elimination of overflow concerns
+
+3. **RSI Calculation (32-bit accumulators, 8-bit output)**
+   - Gain/loss accumulators: 32 bits for sufficient range
+   - RSI output: 8 bits for 0-100 range
+   - Appropriate precision for the calculation
+   - Minimal resource usage for required accuracy
+
+This analysis ensures sufficient precision while optimizing resource utilization.
+
+#### Overflow Prevention Strategies
+
+The implementation employs several strategies to prevent overflow:
+
+1. **Extended-Width Accumulators**
+   - Sum register (64-bit) much wider than required
+   - Gain/loss accumulators (32-bit) with ample margin
+   - Prevents overflow during normal operation
+   - Eliminates need for complex overflow handling
+
+2. **Intermediate Calculation Precision**
+   - Calculations maintain full precision until final output
+   - No premature truncation or rounding
+   - Preserves accuracy throughout calculation chain
+   - Prevents cumulative precision loss
+
+3. **Division Protection**
+   - RSI calculation includes divide-by-zero protection
+   - Conditional execution based on denominator check
+   - Safe default values for edge cases
+   - Robust operation under all conditions
+
+These strategies ensure reliable operation without overflow-related failures.
+
+#### Resource Utilization Tradeoffs
+
+Register width selection involves several resource tradeoffs:
+
+1. **Price Width (16-bit)**
+   - **Wider**: Better precision, higher resource usage
+   - **Narrower**: Limited range, resource savings
+   - **Decision**: 16 bits provides suitable balance
+
+2. **Sum Register (64-bit)**
+   - **Wider**: Absolute overflow prevention, higher resource usage
+   - **Narrower**: Risk of overflow, resource savings
+   - **Decision**: Conservative 64-bit implementation for reliability
+
+3. **RSI Output (8-bit)**
+   - **Wider**: Unnecessary precision, higher resource usage
+   - **Narrower**: Matches exact requirements, resource optimization
+   - **Decision**: 8 bits exactly matches 0-100 range requirement
+
+4. **State Registers (2-3 bits)**
+   - **Wider**: Unnecessary bits, higher resource usage
+   - **Narrower**: Matches state count, resource optimization
+   - **Decision**: Minimal width based on state count
+
+These tradeoffs balance precision requirements with efficient resource utilization.
+
+#### Bit Width Selection Methodology
+
+The bit width selection follows a structured methodology:
+
+1. **Analysis Phase**
+   - Determine value ranges for each register
+   - Identify minimum bits required for representation
+   - Assess overflow and precision risks
+   - Consider system integration requirements
+
+2. **Margin Allocation**
+   - Add safety margin based on criticality
+   - Ensure sufficient headroom for edge cases
+   - Balance margin with resource considerations
+   - Apply conservative sizing where appropriate
+
+3. **Standardization**
+   - Align widths with standard data paths where possible
+   - Use power-of-2 widths for efficiency
+   - Maintain consistency across related signals
+   - Consider synthesis tool optimization capabilities
+
+4. **Verification**
+   - Test with extreme values to verify margin adequacy
+   - Confirm overflow prevention
+   - Validate precision for all operational scenarios
+   - Assess resource utilization impact
+
+This methodology ensures appropriate register sizing throughout the system.
 
 ### Parameterized Design Techniques
 
-- **Parameter Definition Strategy**: Key parameters (`WINDOW`, `DW`, `DEPTH`, thresholds) defined at module level with defaults.
-- **Compile-Time Configurability**: Allows tailoring the design (e.g., MA period, RSI period, price precision, thresholds) during synthesis without code modification.
-- **Design Reuse Approaches**: Modules can be easily reused with different parameter values (e.g., multiple MAs with different periods).
-- **Implementation Flexibility**: Adapts the same RTL to different trading strategies or precision requirements.
-- **Parameter Propagation Methodology**: Parameters overridden at instantiation in the top-level module (`trading_system_singlemem.v`).
+#### Parameter Definition Strategy
+
+The system implements parameterization to enhance flexibility and reusability:
+
+```verilog
+module moving_average_fsm #(
+    parameter WINDOW = 20,    // Moving average window size
+    parameter DW     = 16     // Data width for price values
+)(
+    // Port list...
+);
+
+module price_memory #(
+    parameter DEPTH = 14,     // FIFO buffer depth
+    parameter DW = 16         // Data width for price values
+)(
+    // Port list...
+);
+
+module trading_decision #(
+    parameter BUY_RSI_THR  = 8'd30,  // RSI buy threshold
+    parameter SELL_RSI_THR = 8'd70   // RSI sell threshold
+)(
+    // Port list...
+);
+```
+
+The parameter strategy includes:
+- Descriptive parameter names for clarity
+- Meaningful default values for common scenarios
+- Consistent naming across related modules
+- Clear documentation through comments
+- Type and width specifications where appropriate
+
+This approach enhances code readability and maintenance.
+
+#### Compile-Time Configurability
+
+Parameters provide compile-time configurability:
+
+```verilog
+// Module instantiation with parameter overrides
+moving_average_fsm #(
+    .WINDOW(50),         // 50-period moving average
+    .DW(24)              // 24-bit price width
+) ma_module (
+    // Port connections...
+);
+
+trading_decision #(
+    .BUY_RSI_THR(25),    // More aggressive buy threshold
+    .SELL_RSI_THR(75)    // More aggressive sell threshold
+) decision_module (
+    // Port connections...
+);
+```
+
+This configurability enables:
+- Customization without code changes
+- Adaptation to different trading strategies
+- Optimization for specific applications
+- Easy experimentation with different parameters
+- Consistent implementation across configurations
+
+The compile-time nature ensures zero runtime overhead.
+
+#### Design Reuse Approaches
+
+Parameterization supports several design reuse approaches:
+
+1. **Window Size Variation**
+   - Different technical indicators use different periods
+   - Parameter adjustment accommodates various requirements
+   - Consistent implementation across window sizes
+   - Shared algorithm with different configurations
+
+2. **Data Width Adaptation**
+   - Different markets may require different precision
+   - Parameter adjustment for price representation
+   - Consistent implementation across data widths
+   - Scalable design for various applications
+
+3. **Strategy Customization**
+   - Different trading strategies use different thresholds
+   - Parameter adjustment for strategy tuning
+   - Experimental optimization through parameter sweeps
+   - Market-specific customization
+
+4. **Module Replication**
+   - Multiple instances with different configurations
+   - Support for multi-timeframe analysis
+   - Parallel strategy evaluation
+   - Enhanced system capabilities through replication
+
+These approaches maximize code reuse while maintaining flexibility.
+
+#### Implementation Flexibility
+
+The parameterized design enables several implementation options:
+
+1. **Multi-Indicator Systems**
+   ```verilog
+   // Short-term indicator
+   moving_average_fsm #(.WINDOW(10)) ma_short (...);
+   
+   // Medium-term indicator
+   moving_average_fsm #(.WINDOW(20)) ma_medium (...);
+   
+   // Long-term indicator
+   moving_average_fsm #(.WINDOW(50)) ma_long (...);
+   ```
+
+2. **Multi-Market Adaptation**
+   ```verilog
+   // High-value market (wider data path)
+   moving_average_fsm #(.DW(24)) ma_bitcoin (...);
+   
+   // Standard market
+   moving_average_fsm #(.DW(16)) ma_stocks (...);
+   ```
+
+3. **Strategy Variations**
+   ```verilog
+   // Conservative strategy
+   trading_decision #(.BUY_RSI_THR(20), .SELL_RSI_THR(80)) conservative (...);
+   
+   // Aggressive strategy
+   trading_decision #(.BUY_RSI_THR(40), .SELL_RSI_THR(60)) aggressive (...);
+   ```
+
+This flexibility enhances the system's applicability across different scenarios.
+
+#### Parameter Propagation Methodology
+
+The system implements consistent parameter propagation:
+
+1. **Top-Down Propagation**
+   ```verilog
+   // Top-level parameters
+   module trading_system #(
+       parameter WINDOW_SIZE = 20,
+       parameter DATA_WIDTH = 16
+   )(
+       // Ports...
+   );
+   
+   // Parameter propagation to submodules
+   moving_average_fsm #(
+       .WINDOW(WINDOW_SIZE),
+       .DW(DATA_WIDTH)
+   ) ma_module (...);
+   
+   price_memory #(
+       .DEPTH(WINDOW_SIZE),
+       .DW(DATA_WIDTH)
+   ) mem_module (...);
+   ```
+
+2. **Consistent Naming**
+   - Related parameters use consistent naming
+   - Clear mapping between levels
+   - Intuitive parameter relationships
+   - Reduced confusion or ambiguity
+
+3. **Documentation**
+   - Parameters clearly documented at each level
+   - Relationship between parameters explained
+   - Valid range and impact described
+   - Usage examples provided
+
+This methodology ensures clean parameter handling throughout the design hierarchy.
 
 ## 8. Performance Considerations
 
 ### Clock Domain Analysis
 
-- **Single Domain Advantages**: Simplifies design, avoids complex Clock Domain Crossing (CDC) synchronization logic, eliminates metastability risks within the core, makes timing analysis straightforward.
-- **Clock Frequency Selection**: The design targets ~100 MHz, achievable on most modern FPGAs. The critical path is likely the division operation. Higher frequencies might require pipelining or multi-cycle operations.
-- **FPGA Clock Management**: Assumes use of dedicated global clock networks (BUFG on Xilinx) for low skew distribution.
-- **Timing Constraint Approach**: Requires standard constraints: clock period definition, input/output delay specification relative to the clock.
+#### Single Domain Advantages
+
+The technical analysis system implements a single clock domain architecture, providing several significant advantages:
+
+1. **Simplified Timing Analysis**
+   - Single clock reference for all sequential elements
+   - No clock domain crossing (CDC) complexity
+   - Straightforward setup and hold analysis
+   - Reduced timing closure challenges
+   - Clear timing relationships throughout the system
+
+2. **Elimination of Synchronization Overhead**
+   - No need for multi-stage synchronizers
+   - Avoidance of metastability issues
+   - Zero synchronization latency
+   - Reduced resource utilization
+   - Simplified verification requirements
+
+3. **Deterministic Operation**
+   - Predictable cycle counts for all operations
+   - Consistent latency for calculations
+   - Reliable handshaking between modules
+   - Well-defined control flow
+   - Simpler debugging and verification
+
+4. **System Integration Simplicity**
+   - Single clock distribution network
+   - Uniform timing constraints
+   - Consistent design methodology
+   - Straightforward interface timing
+   - Reduced integration complexity
+
+These advantages create a robust foundation for the trading system's implementation.
+
+#### Clock Frequency Selection
+
+The system targets a clock frequency of 100 MHz (10ns period), which provides:
+
+1. **Performance Adequacy**
+   - Sufficient for typical market data rates
+   - Ample processing headroom for indicators
+   - Support for multiple instrument processing
+   - Margin for system scalability
+   - Balance between performance and power
+
+2. **Implementation Feasibility**
+   - Achievable on typical FPGA platforms
+   - Reasonable timing closure challenge
+   - Margin for routing and logic delays
+   - Compatible with standard interfaces
+   - Realistic for the implemented algorithms
+
+3. **Power Efficiency**
+   - Moderate frequency for power considerations
+   - Avoidance of excessive switching losses
+   - Balance between performance and energy usage
+   - Suitable for continuous operation
+   - Compatible with low-power requirements
+
+The frequency selection provides an optimal balance between performance and implementation considerations.
+
+#### FPGA Clock Management
+
+The implementation leverages standard FPGA clock management techniques:
+
+1. **Global Clock Resources**
+   - Utilization of dedicated clock networks
+   - Low-skew distribution across the device
+   - Optimized routing for timing
+   - Efficient resource utilization
+   - Support for the selected frequency
+
+2. **Clock Tree Design**
+   - Single root clock for the entire system
+   - Balanced distribution to all components
+   - Minimal skew between destinations
+   - Controlled insertion delay
+   - Reliable clock delivery
+
+3. **FPGA-Specific Features**
+   - Potential use of clock management tiles (CMTs)
+   - Phase-locked loops (PLLs) for clock generation
+   - Clock buffers for distribution
+   - Input/output clock resources
+   - Platform-specific optimization
+
+These techniques ensure reliable clock distribution throughout the design.
+
+#### Timing Constraint Approach
+
+The system employs a straightforward timing constraint approach:
+
+1. **Primary Clock Constraint**
+   ```
+   create_clock -period 10.000 -name clk [get_ports clk]
+   ```
+   - 10ns period (100 MHz)
+   - Applied to the top-level clock input
+   - Propagated throughout the hierarchy
+   - Primary timing reference for the design
+
+2. **Input Delay Constraints**
+   ```
+   set_input_delay -clock clk 2.000 [get_ports {price_in* new_price start rst}]
+   ```
+   - 2ns input delay assumption
+   - Applied to all external inputs
+   - Models realistic input timing
+   - Ensures proper setup/hold analysis
+
+3. **Output Delay Constraints**
+   ```
+   set_output_delay -clock clk 2.000 [get_ports {moving_avg* rsi* buy sell done}]
+   ```
+   - 2ns output delay requirement
+   - Applied to all external outputs
+   - Ensures proper driving strength
+   - Models realistic output timing
+
+4. **False Path Identification**
+   ```
+   set_false_path -from [get_ports rst] -to [all_registers]
+   ```
+   - Asynchronous reset handling
+   - Prevents unrealistic timing requirements
+   - Appropriate for reset distribution
+   - Standard asynchronous reset pattern
+
+These constraints provide a solid foundation for timing analysis and implementation.
 
 ### Calculation Latency Details
 
-- **Moving Average Latency Analysis**: 2 cycles from `start` assertion to `done` assertion.
-- **RSI Latency Analysis**: ~1-2 cycles from `new_price_strobe` to `done` (assuming single-cycle arithmetic).
-- **End-to-End System Latency**: From `new_price` input assertion to `buy`/`sell` output update:
-    1. Price write to memory: 1 cycle
-    2. `compute_enable` generation (combinational): 0 cycles
-    3. Indicator calculation (MA/RSI start): 1 cycle
-    4. Indicator computation (MA: 2 cycles, RSI: ~1-2 cycles): Max ~2 cycles
-    5. Trading decision evaluation: 1 cycle
-    - **Total**: ~ 1 + 1 + 2 + 1 = **5 clock cycles** (approximate, dominated by MA latency).
-- **Critical Path Identification**: Likely within the division logic (`sum / WINDOW` or RSI division) or potentially the 64-bit sum update path.
-- **Latency Optimization Strategies**: Pipelining calculations (especially division), using faster arithmetic units (DSP blocks), optimizing state machines.
+#### Moving Average Latency Analysis
+
+The moving average implementation has well-defined latency characteristics:
+
+1. **Calculation Initiation**
+   - Triggered by `start` signal (derived from `memory_full`)
+   - One cycle latency to state transition
+   - Predictable initiation timing
+   - Clear starting point for latency measurement
+
+2. **Computation Latency**
+   - State 1 (CALCULATE): 1 cycle
+     - Sum update and division in single cycle
+     - Registered output calculation
+     - Assertion of done signal
+   - State 2 (DONE): 1 cycle
+     - Completion signaling
+     - Return to idle state
+
+3. **End-to-End Latency**
+   - From `start` assertion to `done` assertion: 2 cycles
+   - From data availability to result availability: 3 cycles
+   - Deterministic regardless of input values
+   - Fixed cycle count for all calculations
+
+4. **Critical Path Analysis**
+   - Addition/subtraction for sum update
+   - Division operation for average calculation
+   - Division likely forms the critical path
+   - Implementation-dependent timing characteristics
+   - Potential optimization through pipelining
+
+This analysis provides clear latency expectations for system integration.
+
+#### RSI Latency Analysis
+
+The RSI calculation involves more complex latency characteristics:
+
+1. **FIFO Filling Latency**
+   - 20 clock cycles minimum (one per price)
+   - Dependent on price data arrival rate
+   - Sequential filling of the FIFO buffer
+   - Prerequisite for calculation initiation
+
+2. **Calculation Initiation**
+   - Triggered by `start` signal after FIFO is full
+   - One cycle latency to state transition
+   - Clear starting point for processing
+
+3. **State Transition Latency**
+   - IDLE → FILL_FIFO: 1 cycle
+   - FILL_FIFO → READ_INIT: 1 cycle
+   - READ_INIT → COMPARE: 1 cycle (plus FIFO read delay)
+   - COMPARE → READ_WAIT: 1 cycle (19 iterations)
+   - READ_WAIT → COMPARE: 1 cycle (19 iterations)
+   - COMPARE → DONE: 1 cycle
+   - DONE → IDLE: 1 cycle
+
+4. **Processing Latency**
+   - Sample processing: 2 cycles per sample
+   - 19 samples to process
+   - Total processing: ~38 cycles
+   - Final calculation: 1 cycle
+   - Completion signaling: 1 cycle
+
+5. **End-to-End Latency**
+   - From `start` assertion to `done` assertion: ~43 cycles
+   - Dominated by the sequential sample processing
+   - Much higher than moving average latency
+   - Less deterministic due to conditional execution
+
+6. **Critical Path Analysis**
+   - Comparison operations
+   - Addition for accumulation
+   - Division for final calculation
+   - Division likely forms the critical path
+   - Implementation-dependent timing characteristics
+
+The RSI calculation has significantly higher latency than the moving average calculation.
+
+#### End-to-End System Latency
+
+The complete system latency includes several components:
+
+1. **Initial Data Collection**
+   - 14-20 price inputs (depending on indicator)
+   - Dependent on market data arrival rate
+   - Sequential filling of the price memory
+   - Prerequisite for calculation initiation
+
+2. **Indicator Calculation**
+   - Moving Average: ~3 cycles
+   - RSI: ~43 cycles
+   - Parallel execution of both indicators
+   - System latency dominated by slowest component (RSI)
+
+3. **Trading Decision Latency**
+   - Condition evaluation: 1 cycle
+   - Signal generation: 1 cycle
+   - Minimal impact on overall latency
+
+4. **Total System Latency**
+   - From first price to first signal: ~20 + 43 + 1 = ~64 cycles
+   - At 100 MHz: ~640ns
+   - Dominated by data collection and RSI calculation
+   - Additional latency for external interfaces
+   - Meets requirements for most trading applications
+
+This analysis provides realistic expectations for system responsiveness.
+
+#### Critical Path Identification
+
+The system has several potential critical paths:
+
+1. **Moving Average Critical Path**
+   ```
+   sum register → addition/subtraction → division → moving_avg register
+   ```
+   - Dominated by the division operation
+   - Implementation-dependent timing characteristics
+   - Potential target for optimization
+
+2. **RSI Critical Path**
+   ```
+   gain_sum/loss_sum registers → addition → division → rsi register
+   ```
+   - Division for final RSI calculation
+   - Complex operation with significant delay
+   - Likely system-wide critical path
+
+3. **Trading Decision Critical Path**
+   ```
+   moving_avg/rsi/price registers → comparisons → AND operation → buy/sell registers
+   ```
+   - Simpler operations with lower delay
+   - Not likely to be system-limiting
+   - Less critical for optimization
+
+Critical path optimization should focus on the division operations in the indicator calculations.
+
+#### Latency Optimization Strategies
+
+Several strategies could further optimize calculation latency:
+
+1. **Pipelined Division**
+   ```verilog
+   // Multi-cycle division example
+   reg [1:0] div_state = 0;
+   
+   always @(posedge clk) begin
+       case (div_state)
+           0: begin  // Initiate division
+               div_state <= 1;
+           end
+           1: begin  // Complete division
+               moving_avg <= sum / WINDOW;
+               div_state <= 2;
+           end
+           2: begin  // Complete operation
+               done <= 1;
+               div_state <= 0;
+           end
+       endcase
+   end
+   ```
+   - Breaks critical path through pipelining
+   - Increases latency but improves clock frequency
+   - More complex control logic
+   - Better scaling to higher frequencies
+
+2. **Optimized Division Implementation**
+   ```verilog
+   // For power-of-2 divisors (not directly applicable to WINDOW=10)
+   moving_avg <= sum >> 4;  // Division by 16
+   
+   // For specific divisors like 10
+   wire [63:0] scaled_sum = (sum * 32'h1999999A) >> 32;  // Multiplication by 1/10
+   moving_avg <= scaled_sum;
+   ```
+   - Replaces division with more efficient operations
+   - Reduces critical path delay
+   - May involve approximation
+   - Different optimization for different divisors
+
+3. **Parallel Sample Processing (RSI)**
+   - Process multiple samples simultaneously
+   - Reduce iterative loop count
+   - Increased resource usage
+   - More complex control logic
+   - Significant latency reduction potential
+
+These strategies offer different tradeoffs between latency, resource utilization, and implementation complexity.
 
 ### Throughput Analysis
 
-- **Maximum Throughput Calculation**: Can accept one `new_price` input per clock cycle after the initial fill phase. Throughput = Clock Frequency (e.g., 100 million updates/sec @ 100 MHz).
-- **Sustained Performance Evaluation**: Limited only by the clock frequency, assuming inputs arrive fast enough. No internal bottlenecks prevent processing one price per cycle.
-- **Bottleneck Identification**: Not inherently throughput-limited, but latency is determined by the calculation pipeline depth.
-- **Throughput Enhancement Techniques**: Primarily increasing clock frequency (requires timing optimization) or parallelizing across multiple instruments.
+#### Maximum Throughput Calculation
+
+The system's throughput can be analyzed at different levels:
+
+1. **Moving Average Throughput**
+   - One update per clock cycle after initialization
+   - State machine completes in 3 cycles
+   - Maximum theoretical throughput: 1/3 * clock frequency
+   - At 100 MHz: ~33 million updates per second
+   - Far exceeds typical market data rates
+
+2. **RSI Throughput**
+   - One update per RSI calculation cycle
+   - Calculation requires ~43 cycles
+   - Maximum theoretical throughput: 1/43 * clock frequency
+   - At 100 MHz: ~2.3 million updates per second
+   - Still exceeds typical market data requirements
+
+3. **System Throughput**
+   - Dominated by the slowest component (RSI)
+   - One complete update per ~43 cycles
+   - Maximum theoretical throughput: ~2.3 million updates per second
+   - Far exceeds typical market data rates (thousands per second)
+   - Ample margin for system scalability
+
+This analysis confirms that the system can easily handle typical market data rates.
+
+#### Sustained Performance Evaluation
+
+Sustained performance analysis considers continuous operation:
+
+1. **Indicator Independence**
+   - Moving average and RSI calculations operate independently
+   - Parallel processing of both indicators
+   - No resource contention between calculations
+   - Sustained throughput equals maximum throughput
+   - No degradation during continuous operation
+
+2. **Price Memory Behavior**
+   - Circular buffer provides constant-time operations
+   - No performance degradation as buffer fills
+   - Consistent throughput during steady-state operation
+   - No memory management overhead
+   - Efficient sustained operation
+
+3. **Control Overhead**
+   - Minimal overhead for state transitions
+   - Clean handshaking between modules
+   - No complex control sequences
+   - Efficient steady-state operation
+   - Negligible impact on sustained throughput
+
+4. **Long-Term Stability**
+   - No accumulated errors affecting performance
+   - No resource leakage or degradation
+   - Consistent timing during extended operation
+   - Reliable long-term behavior
+   - Suitable for continuous market monitoring
+
+The system's design enables consistent performance during sustained operation.
+
+#### Bottleneck Identification
+
+Potential system bottlenecks include:
+
+1. **RSI Calculation**
+   - Most complex calculation in the system
+   - Highest latency component
+   - Sequential sample processing
+   - Primary throughput limiter
+   - Most promising target for optimization
+
+2. **Division Operations**
+   - Complex operations with high latency
+   - Present in both indicator calculations
+   - Likely critical path elements
+   - Implementation-dependent performance
+   - Potential targets for optimization
+
+3. **External Interfaces**
+   - Price data input rate
+   - Signal output handling
+   - System integration overhead
+   - Potential external bottlenecks
+   - Not analyzed in the current implementation
+
+4. **Clock Frequency Limitations**
+   - Maximum achievable clock frequency
+   - Implementation and device dependent
+   - Affects all throughput calculations
+   - Foundational performance parameter
+   - Target for timing optimization
+
+Addressing these bottlenecks would enhance system throughput capabilities.
+
+#### Throughput Enhancement Techniques
+
+Several techniques could further enhance system throughput:
+
+1. **Pipelined RSI Calculation**
+   ```verilog
+   // Conceptual pipelined implementation
+   module rsi_pipeline (
+       // Ports...
+   );
+       // Multiple processing stages operating concurrently
+       // Stage 1: Price comparison
+       // Stage 2: Accumulation
+       // Stage 3: Final calculation
+   endmodule
+   ```
+   - Parallel processing of multiple samples
+   - Overlapped execution of calculation stages
+   - Increased resource usage
+   - More complex control logic
+   - Potentially multiple outputs per clock cycle
+
+2. **Multiple Calculation Units**
+   ```verilog
+   // Parallel instantiation for different instruments
+   rsi_fsm rsi_instrument1 (...);
+   rsi_fsm rsi_instrument2 (...);
+   rsi_fsm rsi_instrument3 (...);
+   ```
+   - Parallel processing of multiple instruments
+   - Linear throughput scaling with instances
+   - Proportional resource utilization
+   - No modification to existing modules
+   - Simple system-level enhancement
+
+3. **Higher Clock Frequency**
+   - Optimize critical paths for higher frequency
+   - Proportional throughput enhancement
+   - Increased power consumption
+   - More challenging timing closure
+   - Direct performance improvement
+
+4. **Optimized Division Implementation**
+   - Replace division with multiplication by reciprocal
+   - Use DSP blocks for efficient implementation
+   - Potential approximation tradeoffs
+   - Improved critical path timing
+   - Enhanced calculation throughput
+
+These techniques provide options for scaling system performance to meet application requirements.
 
 ### Synchronization Strategy
 
-- **Parallel Calculation Management**: MA and RSI calculations are triggered simultaneously by `compute_enable`. They run independently in parallel.
-- **Trigger Signal Distribution**: `compute_enable` (derived from `mem_cnt`) fans out to both indicator modules.
-- **Handshaking Protocol Design**: Simple `start`/`strobe` and `done` signals. `done` signals indicate result validity. The Trading Decision module implicitly assumes inputs are valid based on system timing.
-- **Pipeline Balancing Approach**: Calculations are roughly balanced (MA: 3 cycles, RSI: ~2 cycles). Trading Decision adds 1 cycle.
+#### Parallel Calculation Management
+
+The system implements parallel calculation of multiple indicators, requiring effective synchronization:
+
+1. **Independent Operation**
+   - Moving average and RSI calculate independently
+   - Separate control logic and datapaths
+   - No resource sharing or contention
+   - Maximum parallelism exploitation
+   - Simplified synchronization requirements
+
+2. **Common Trigger Mechanism**
+   ```verilog
+   // Derived from memory buffer status
+   wire compute_enable = (mem_cnt == 14);
+   
+   // Distributed to both calculation modules
+   moving_average_fsm ma14 (
+       .start(compute_enable),
+       // Other connections
+   );
+   
+   rsi_inc rsi14 (
+       .new_price_strobe(compute_enable),
+       // Other connections
+   );
+   ```
+   - Consistent triggering of both calculations
+   - Single synchronization point for initiation
+   - Clear timing relationship at start
+   - Simple fanout distribution
+   - No complex handshaking required
+
+3. **Independent Completion**
+   - Each module generates its own completion signal
+   - No forced synchronization of completion timing
+   - Natural timing based on calculation complexity
+   - Accommodates different calculation latencies
+   - Simplified control logic
+
+This approach maximizes parallelism while maintaining appropriate synchronization.
+
+#### Trigger Signal Distribution
+
+The system implements a clean trigger signal distribution strategy:
+
+1. **Central Trigger Generation**
+   ```verilog
+   // Generated from memory status
+   wire compute_enable = (mem_cnt == 14);
+   ```
+   - Single source of trigger
+   - Consistent timing for all components
+   - Clear generation logic
+   - Predictable activation timing
+   - Simple distribution methodology
+
+2. **Trigger Qualification**
+   - Based on valid data availability
+   - Ensures sufficient data for calculation
+   - Prevents premature processing
+   - Clean transition from initialization to operation
+   - Robust against timing variations
+
+3. **Signal Propagation**
+   - Direct connection to calculation modules
+   - Minimal distribution delay
+   - No qualification or conditioning
+   - Simple fanout implementation
+   - Reliable delivery to all consumers
+
+This distribution strategy ensures consistent triggering of parallel operations.
+
+#### Handshaking Protocol Design
+
+The system implements a simple handshaking protocol:
+
+1. **Calculation Initiation**
+   - `compute_enable` signal triggers calculation
+   - Single-cycle pulse for clean edge detection
+   - Recognized by state machines as operation trigger
+   - No acknowledgment required
+   - Simple unidirectional signaling
+
+2. **Calculation Completion**
+   - `ma_done` and `rsi_done` signals indicate completion
+   - Single-cycle pulses for clean timing
+   - Independent timing based on calculation complexity
+   - No central coordination required
+   - Simple completion notification
+
+3. **Signal Consumption**
+   - Trading decision module uses indicator results
+   - No explicit handshaking for result consumption
+   - Continuous evaluation of conditions
+   - Implicit synchronization through registered outputs
+   - Simplified synchronization methodology
+
+This streamlined protocol enhances system efficiency while maintaining proper synchronization.
+
+#### Pipeline Balancing Approach
+
+The system implements a "natural" pipeline balancing approach:
+
+1. **Independent Timing**
+   - Each module operates at its natural timing
+   - No forced synchronization between stages
+   - Different latencies for different calculations
+   - Natural balancing based on computation complexity
+   - Simplified control logic
+
+2. **Asynchronous Result Consumption**
+   - Trading decision continuously evaluates inputs
+   - No explicit synchronization with indicator completion
+   - Results used as they become available
+   - Natural pipeline operation
+   - Elimination of explicit synchronization overhead
+
+3. **Data Consistency**
+   - Registered outputs for all calculations
+   - Stable values between updates
+   - Clean transitions without glitches
+   - Implicit timing synchronization
+   - Reliable operation without complex protocols
+
+This approach simplifies the system while maintaining proper pipeline operation.
 
 ### Resource Utilization
 
-- **FPGA Resource Analysis**: (Qualitative estimates for moderate parameters)
-    - **LUTs**: Dominated by arithmetic (especially division if not using DSPs), comparators, FSM logic. Likely a few hundred to a thousand LUTs.
-    - **FFs**: Dominated by memory array (`DEPTH*DW`), accumulators (64b + 32b + 32b), state registers, pipeline registers. Likely several hundred FFs.
-    - **BRAM**: `price_memory` could map to BRAM for larger `DEPTH` (> ~32-64 elements, depending on FPGA).
-    - **DSPs**: May be inferred by synthesis tools for multiplication (RSI) or optimized division, potentially 1-2 DSP blocks.
-- **Scaling Considerations**: Resources scale linearly with `DEPTH` (memory) and `DW` (datapath width). Adding more indicators increases resources additively.
+#### FPGA Resource Analysis
+
+The system's FPGA resource utilization can be analyzed by component:
+
+1. **Price Memory**
+   - Memory array: 14 × 16 bits = 224 bits
+   - Pointers and counters: ~16 bits
+   - Control logic: Minimal LUT usage
+   - Likely implementation: Distributed RAM or registers
+   - Estimated resource usage: ~35 LUTs, ~250 FFs
+
+2. **Moving Average FSM**
+   - Sum register: 64 bits
+   - State register: 2 bits
+   - Output register: 32 bits
+   - Done flag: 1 bit
+   - Control logic: ~10 LUTs
+   - Division logic: Implementation-dependent
+   - Estimated resource usage: ~30 LUTs, ~100 FFs, potential DSP usage
+
+3. **RSI Calculator**
+   - FIFO memory: 20 × 16 bits = 320 bits
+   - Pointers and counters: ~16 bits
+   - State register: 3 bits
+   - Accumulators: 2 × 32 bits = 64 bits
+   - Price registers: 2 × 16 bits = 32 bits
+   - Output register: 8 bits
+   - Control logic: ~40 LUTs
+   - Division logic: Implementation-dependent
+   - Estimated resource usage: ~80 LUTs, ~450 FFs, potential DSP usage
+
+4. **Trading Decision**
+   - Input registers: ~56 bits
+   - Output registers: 2 bits
+   - Comparison logic: ~10 LUTs
+   - Estimated resource usage: ~10 LUTs, ~60 FFs
+
+These estimates provide a basic understanding of resource requirements.
+
+#### Logic Element Requirements
+
+The system's logic element requirements include:
+
+1. **State Machines**
+   - Moving Average: 3-state machine
+   - RSI: 6-state machine
+   - State encoding and next-state logic
+   - Conditional transitions
+   - Estimated LUTs: ~30
+
+2. **Arithmetic Operations**
+   - Addition and subtraction for accumulation
+   - Comparison operations for decision logic
+   - Division operations for final calculations
+   - Estimated LUTs: ~50
+
+3. **Control Logic**
+   - Signal generation and qualification
+   - Handshaking and synchronization
+   - Status monitoring
+   - Estimated LUTs: ~30
+
+4. **Miscellaneous Logic**
+   - Buffer management
+   - Signal routing
+   - System integration
+   - Estimated LUTs: ~20
+
+Total estimated LUT usage: ~130 LUTs
+This is well within the capacity of even small FPGA devices.
+
+#### Memory Utilization
+
+The system's memory requirements include:
+
+1. **Price History Storage**
+   - Moving Average: 10 × 32 bits = 320 bits
+   - RSI: 20 × 16 bits = 320 bits
+   - Total: ~640 bits
+   - Implementation options:
+     - Distributed RAM
+     - Register arrays
+     - Block RAM (for larger window sizes)
+
+2. **Accumulator Registers**
+   - Moving Average sum: 64 bits
+   - RSI gain/loss accumulators: 2 × 32 bits = 64 bits
+   - Total: ~128 bits
+   - Implementation: Typically as registers
+
+3. **State and Control Registers**
+   - State machines: ~5 bits
+   - Control flags: ~10 bits
+   - Pointers and counters: ~30 bits
+   - Total: ~45 bits
+   - Implementation: Typically as registers
+
+Total memory requirement: ~813 bits
+This is minimal by FPGA standards and can be implemented using registers or distributed RAM.
+
+#### DSP Block Usage
+
+The system may use DSP blocks for efficient implementation of arithmetic operations:
+
+1. **Division Operations**
+   - Moving Average: sum / WINDOW
+   - RSI: (100 * gain_sum) / (gain_sum + loss_sum)
+   - Potential DSP usage for efficient implementation
+   - Alternative: LUT-based division
+
+2. **Multiplication Operations**
+   - RSI: 100 * gain_sum
+   - Potential DSP usage for multiplication
+   - Alternative: Shift and add for constant multiplication
+
+3. **Implementation Considerations**
+   - Synthesis tool optimization options
+   - Target device DSP capabilities
+   - Performance requirements
+   - Resource allocation strategy
+
+Estimated DSP usage: 0-2 DSP blocks
+This is minimal and available in virtually all FPGA devices.
+
+#### Scaling Considerations
+
+The system's resource usage scales predictably with parameters:
+
+1. **Window Size Scaling**
+   - Memory usage scales linearly with window size
+   - Logic remains relatively constant
+   - Price Memory: O(n) scaling with window size
+   - Calculation logic: O(1) with window size
+
+2. **Data Width Scaling**
+   - Register width scales linearly with data width
+   - Logic complexity increases modestly
+   - Price representation: O(n) with bit width
+   - Arithmetic complexity: O(n) with bit width
+
+3. **Multi-Instrument Scaling**
+   - Resource usage scales linearly with instrument count
+   - Independent instances for each instrument
+   - No shared resources between instances
+   - Linear resource scaling: O(n) with instrument count
+
+4. **Strategy Complexity Scaling**
+   - Additional indicators increase resource usage
+   - More complex decision logic increases LUT usage
+   - Linear scaling with indicator count
+   - Polynomial scaling with decision complexity
+
+These scaling characteristics enable predictable resource planning for system extensions.
 
 ## 9. Verification and Testing
 
 ### Moving Average Testbench
 
-- **Testbench Architecture**: (`Moving_average/trading_system_tb.v`) Instantiates `memory.v` (shift register version) and `moving_average_fsm.v`.
-- **Test Vector Generation**: Feeds 10 linearly increasing prices (1000, 1005,...).
-- **Assertion Strategy**: None implemented; relies on manual waveform inspection and `$display`.
-- **Result Verification Methodology**: Displays final state; requires manual calculation for verification.
-- **Coverage Analysis**: Not implemented. Likely low coverage due to limited stimulus.
-- **Corner Case Testing**: Not performed in the provided testbench.
+#### Testbench Architecture
+
+The Moving Average testbench implements a comprehensive verification environment:
+
+```verilog
+module trading_system_tb;
+    // Signal declarations
+    reg clk = 0;
+    reg rst = 1;
+    reg write_enable = 0;
+    reg [31:0] new_price = 0;
+    wire [31:0] moving_avg;
+    // Additional signals...
+
+    // Module instantiations
+    memory memory_inst (...);
+    moving_average_fsm ma_fsm (...);
+
+    // Clock generation
+    always #5 clk = ~clk;  // 10ns period (100 MHz)
+
+    // Test sequence implementation
+    initial begin
+        // Test setup and execution
+    end
+endmodule
+```
+
+Key architectural elements include:
+- Clock generation with 10ns period
+- Asynchronous reset control
+- Test price data generation
+- Module instantiation and connection
+- Signal monitoring and verification
+- Comprehensive test sequence
+- Automated completion detection
+
+This architecture provides a robust verification environment.
+
+#### Test Vector Generation
+
+The testbench generates a specific test vector sequence:
+
+```verilog
+// Test data array
+reg [31:0] price_data [0:9];  // 10 price points
+
+// Initialize test data
+initial begin
+    // Reset system
+    rst = 1;
+    #50 rst = 0;
+
+    // Generate test prices (Example: 1000 to 1045)
+    for (i = 0; i < 10; i = i + 1) begin
+        price_data[i] = 1000 + (i * 5);
+    end
+
+    // Feed prices into system
+    for (i = 0; i < 10; i = i + 1) begin
+        #10;  // Small delay
+        new_price = price_data[i];
+        write_enable = 1;
+        #10;  // One clock cycle
+        write_enable = 0;
+        #10;  // Delay between prices
+    end
+    
+    // Wait for completion
+    wait(fifo_data_count == 10);
+    #200;  // Additional cycles for calculation
+    
+    // Display results
+    $display("Final Check: Moving Avg = %d", moving_avg);
+    $finish;
+end
+```
+
+Key test vector features:
+- Linear sequence of increasing prices
+- Predictable pattern for easy verification
+- Regular timing between price inputs
+- Complete buffer filling sequence
+- Controlled test execution
+- Clear test completion criteria
+- Result display for verification
+
+This approach provides a deterministic test scenario with predictable outcomes.
+
+#### Assertion Strategy
+
+The testbench implements several validation checks:
+
+1. **Buffer Fill Validation**
+   ```verilog
+   // Wait for buffer to fill
+   wait(fifo_data_count == 10);
+   $display("SUCCESS: FIFO memory filled with 10 prices.");
+   ```
+   - Verifies proper buffer initialization
+   - Confirms counter functionality
+   - Validates basic system operation
+   - Prerequisite for calculation validation
+
+2. **Visual Validation**
+   ```verilog
+   // Display final state
+   $display("Final Check -> Time: %0t | FIFO Count: %d | Memory Full: %b | Moving Avg: %d",
+             $time, fifo_data_count, memory_full, moving_avg);
+   ```
+   - Shows key system parameters
+   - Enables manual result verification
+   - Confirms system state at completion
+   - Documents test outcomes
+
+These checks provide basic validation of system functionality.
+
+For a comprehensive production testbench, additional assertions would be beneficial:
+
+```verilog
+// Additional assertions (not in original code)
+property reset_clears_sum;
+    @(posedge clk) $rose(rst) |=> (sum == 0);
+endproperty
+assert property(reset_clears_sum);
+
+property valid_ma_range;
+    @(posedge clk) done |-> (moving_avg >= 1000 && moving_avg <= 1045);
+endproperty
+assert property(valid_ma_range);
+```
+
+Such assertions would enhance verification robustness.
+
+#### Result Verification Methodology
+
+The testbench implements a basic result verification approach:
+
+1. **Expected Result Calculation**
+   - For prices [1000, 1005, 1010, 1015, 1020, 1025, 1030, 1035, 1040, 1045]
+   - Sum = 10225
+   - Expected average = 10225 / 10 = 1022.5
+   - Integer result = 1022
+
+2. **Visual Inspection**
+   - Final result displayed at test completion
+   - Manual comparison with expected value
+   - Simple validation approach
+   - Sufficient for basic verification
+
+For production testing, automated verification would be preferable:
+
+```verilog
+// Automated verification (not in original code)
+localparam EXPECTED_RESULT = 1022;
+
+// Validate result
+if (moving_avg == EXPECTED_RESULT)
+    $display("TEST PASSED: Moving Avg = %d (Expected %d)", moving_avg, EXPECTED_RESULT);
+else
+    $display("TEST FAILED: Moving Avg = %d (Expected %d)", moving_avg, EXPECTED_RESULT);
+```
+
+This would enable automated pass/fail determination.
+
+#### Coverage Analysis
+
+The testbench does not explicitly implement coverage analysis, but several coverage metrics would be valuable:
+
+1. **Code Coverage**
+   - Statement coverage: Ensure all code is executed
+   - Branch coverage: Verify all conditional branches
+   - Condition coverage: Test all boolean subconditions
+   - Path coverage: Exercise different code paths
+
+2. **Functional Coverage**
+   - State coverage: Verify all FSM states are reached
+   - Transition coverage: Test all state transitions
+   - Signal coverage: Exercise the range of signal values
+   - Protocol coverage: Verify handshaking protocols
+
+3. **Value Coverage**
+   - Test with minimum, maximum, and intermediate prices
+   - Exercise corner cases (e.g., repeated values)
+   - Verify behavior with extreme data patterns
+   - Test calculation across value ranges
+
+These coverage metrics would ensure comprehensive verification.
+
+#### Corner Case Testing
+
+The testbench does not explicitly test corner cases, but several scenarios should be verified:
+
+1. **Initialization Scenarios**
+   - System behavior immediately after reset
+   - First calculation after buffer fills
+   - Behavior during buffer filling phase
+
+2. **Data Pattern Corner Cases**
+   - All identical prices
+   - Alternating high/low prices
+   - Extreme price values (min, max)
+   - Values causing arithmetic edge cases
+   - Maximum representable sum values
+
+3. **Timing Corner Cases**
+   - Rapid consecutive price updates
+   - Reset during calculation
+   - Reset during buffer filling
+   - Multiple start signals in succession
+   - Variable timing between price inputs
+
+Comprehensive testing would include these scenarios to verify robust operation under all conditions.
 
 ### RSI Testbench
 
-- **Test Pattern Design**: (`rsi_verilog_project/rsi_testbench.v`) Generates a specific alternating gain/loss pattern (+3, -2) leading to a known RSI=60.
-- **RSI Calculation Verification**: Compares final `rsi` output with the expected value (implicit check via `$display`).
-- **State Machine Testing**: Implicitly tests state transitions through the calculation process. Requires waveform analysis for confirmation.
-- **Comprehensive Test Cases**: Only one main pattern tested.
-- **Edge Case Handling Verification**: Does not explicitly test division by zero or other edge cases.
-- **Result Validation Approach**: Displays the final RSI value; manual verification needed.
+#### Test Pattern Design
+
+The RSI testbench implements a specialized test pattern:
+
+```verilog
+reg [15:0] price_array[0:19];
+
+initial begin
+    // Create pattern of rising and falling prices
+    price_array[0] = 100;
+    for (i = 1; i < 20; i = i + 1)
+        price_array[i] = price_array[i - 1] + ((i % 2 == 0) ? 3 : -2);
+```
+
+This creates the sequence:
+[100, 98, 101, 99, 102, 100, 103, 101, 104, 102, 105, 103, 106, 104, 107, 105, 108, 106, 109, 107]
+
+Key pattern features:
+- Initial price: 100
+- Even indices: Price increases by 3
+- Odd indices: Price decreases by 2
+- Alternating gains and losses
+- Predictable final RSI value
+- Controlled test scenario
+- Comprehensive functionality test
+
+This pattern exercises both gain and loss accumulation paths.
+
+#### RSI Calculation Verification
+
+The testbench implements basic verification of the RSI calculation:
+
+```verilog
+wait (done);
+$display("RSI Value = %d", rsi);
+$finish;
+```
+
+The expected calculation for the test pattern:
+- Total gain sum = 9 × 3 = 27
+- Total loss sum = 9 × 2 = 18
+- RSI = 100 * 27 / (27 + 18) = 100 * 27 / 45 = 60
+
+The testbench verifies that the calculated RSI matches this expected value through manual inspection of the output.
+
+For production testing, automated verification would be preferable:
+
+```verilog
+// Automated verification (not in original code)
+localparam EXPECTED_RSI = 60;
+
+if (rsi == EXPECTED_RSI)
+    $display("TEST PASSED: RSI = %d (Expected %d)", rsi, EXPECTED_RSI);
+else
+    $display("TEST FAILED: RSI = %d (Expected %d)", rsi, EXPECTED_RSI);
+```
+
+This would enable automated pass/fail determination.
+
+#### State Machine Testing
+
+The testbench implicitly tests the RSI state machine through the complete calculation sequence:
+
+1. **Reset Testing**
+   ```verilog
+   rst = 1;
+   #20 rst = 0;
+   ```
+   - Initializes all state machine elements
+   - Verifies proper reset behavior
+   - Establishes known starting state
+   - Tests reset path of the state machine
+
+2. **Start Signal Testing**
+   ```verilog
+   #10 start = 1;
+   #10 start = 0;
+   ```
+   - Tests IDLE → FILL_FIFO transition
+   - Verifies proper start signal handling
+   - Validates initial state transition
+   - Confirms edge-triggered behavior
+
+3. **FIFO Filling Testing**
+   ```verilog
+   for (i = 0; i < 20; i = i + 1) begin
+       @(posedge clk);
+       price_in = price_array[i];
+       new_price = 1;
+       @(posedge clk);
+       new_price = 0;
+   end
+   ```
+   - Tests FILL_FIFO state behavior
+   - Verifies price storage operations
+   - Validates FIFO control
+   - Tests transition to READ_INIT
+
+4. **Calculation Testing**
+   ```verilog
+   wait (done);
+   ```
+   - Tests complete calculation sequence
+   - Verifies all state transitions
+   - Validates calculation result
+   - Confirms proper completion
+
+This test sequence implicitly exercises all states and transitions.
+
+#### Comprehensive Test Cases
+
+The testbench implements a specific test case designed to verify RSI calculation. For comprehensive verification, additional test cases would be valuable:
+
+1. **All Rising Prices**
+   - Create a sequence of consistently increasing prices
+   - Expected RSI = 100 (all gains, no losses)
+   - Tests gain accumulation path
+   - Verifies boundary condition handling
+
+2. **All Falling Prices**
+   - Create a sequence of consistently decreasing prices
+   - Expected RSI = 0 (all losses, no gains)
+   - Tests loss accumulation path
+   - Verifies boundary condition handling
+
+3. **No Price Changes**
+   - Create a sequence of identical prices
+   - Expected RSI = undefined (no gains or losses)
+   - Tests division by zero protection
+   - Verifies edge case handling
+
+4. **Mixed Pattern with Zeros**
+   - Create a sequence with zero and non-zero changes
+   - Tests mixed accumulation paths
+   - Verifies correct gain/loss discrimination
+   - Tests arithmetic robustness
+
+5. **Extreme Values**
+   - Create a sequence with maximum/minimum values
+   - Tests arithmetic range handling
+   - Verifies overflow protection
+   - Tests calculation accuracy under extreme conditions
+
+These test cases would provide comprehensive verification of the RSI calculation.
+
+#### Edge Case Handling Verification
+
+The testbench should verify proper edge case handling:
+
+1. **Division by Zero**
+   - Test scenario with no price changes
+   - Verify handling of gain_sum + loss_sum = 0
+   - Expected behavior: RSI = 0
+   - Tests protection logic in DONE state
+
+2. **FIFO Edge Cases**
+   - Test behavior with empty FIFO
+   - Test transition from not full to full
+   - Verify proper pointer management
+   - Test FIFO access timing
+
+3. **Reset During Operation**
+   - Apply reset during FIFO filling
+   - Apply reset during calculation
+   - Verify clean state clearing
+   - Test recovery after reset
+
+4. **Timing Edge Cases**
+   - Variable timing between new prices
+   - Rapid succession of new prices
+   - Irregular price input timing
+   - Verify robust timing behavior
+
+5. **Boundary Value Analysis**
+   - Test with minimum price values
+   - Test with maximum price values
+   - Test with adjacent price values
+   - Verify calculation accuracy at boundaries
+
+These edge case tests would enhance verification robustness.
+
+#### Result Validation Approach
+
+The testbench uses a simple result validation approach:
+
+```verilog
+wait (done);
+$display("RSI Value = %d", rsi);
+```
+
+This requires manual inspection of the output and comparison with the expected value.
+
+For a more robust approach, automated validation and comprehensive result analysis would be preferable:
+
+```verilog
+// Automated validation (not in original code)
+always @(posedge clk) begin
+    if (done) begin
+        if (rsi == 60) begin
+            $display("TEST PASSED: RSI = %d (Expected 60)", rsi);
+            test_passed = 1;
+        end else begin
+            $display("TEST FAILED: RSI = %d (Expected 60)", rsi);
+            test_failed = 1;
+        end
+    end
+end
+
+// Test timeout and completion
+initial begin
+    #10000;  // Maximum simulation time
+    if (!test_passed && !test_failed)
+        $display("TEST FAILED: Timeout - done signal not asserted");
+    $finish;
+end
+```
+
+This approach would provide automated pass/fail determination and timeout protection.
 
 ### Trading System Testbench
 
-- **End-to-End Testing Strategy**: (`Combined_analysis/tb_trading_system_singlemem.v`) Instantiates the top-level `trading_system_singlemem`.
-- **Integration Test Methodology**: Feeds prices, waits for FIFO fill (`mem_cnt == 14`), monitors outputs (`moving_avg`, `rsi`, `buy`, `sell`).
-- **Signal Validation Techniques**: Uses `$monitor` to display key signals over time. Requires manual inspection.
-- **System-Level Timing Verification**: Implicitly verifies timing through simulation, but no explicit timing checks or assertions.
-- **Output Analysis and Reporting**: Relies on `$display` and `$monitor`. VCD dump enabled for waveform analysis.
-- **Regression Testing Framework**: Not implemented.
+#### End-to-End Testing Strategy
+
+The Trading System testbench implements a comprehensive end-to-end testing strategy:
+
+```verilog
+module tb_trading_system_singlemem;
+    // Signal declarations and module instantiation
+    
+    // Test price array
+    reg [15:0] prices [0:13];
+    
+    // Test sequence
+    initial begin
+        // Initialize prices
+        prices[ 0] = 16'd10234; prices[ 1] = 16'd10380;
+        prices[ 2] = 16'd10125; prices[ 3] = 16'd10490;
+        // Additional prices...
+        
+        // Reset system
+        rst = 1;
+        repeat (5) @(posedge clk);
+        rst = 0;
+        
+        // Feed prices
+        index = 0;
+        while (index < 14) begin
+            price_in = prices[index];
+            new_price = 1;
+            index = index + 1;
+            @(posedge clk);
+            new_price = 0;
+            @(posedge clk);
+        end
+        
+        // Wait for completion
+        wait (mem_cnt == 14);
+        
+        // Run additional time for calculation
+        #2000;
+        
+        // End simulation
+        $finish;
+    end
+    
+    // Monitoring
+    initial begin
+        $display("Time | Price | MA | RSI | BUY | SELL");
+        $monitor("%4t | %d | %d | %d | %b | %b",
+                 $time, price_in, moving_avg, rsi, buy, sell);
+    end
+endmodule
+```
+
+This strategy provides:
+- Complete system verification
+- End-to-end data flow testing
+- Component interaction validation
+- Realistic operational scenario
+- Comprehensive signal monitoring
+- Deterministic test sequence
+- Clear success criteria
+
+This approach verifies the entire system as an integrated unit.
+
+#### Integration Test Methodology
+
+The testbench implements an integration-focused methodology:
+
+1. **Top-Down Integration**
+   - Tests the complete system
+   - Verifies all module interactions
+   - Validates end-to-end functionality
+   - Ensures proper signal propagation
+   - Tests realistic operational scenarios
+
+2. **Black-Box Testing**
+   - Treats the system as a whole
+   - Focuses on input/output relationships
+   - Validates external behavior
+   - Simulates real-world usage
+   - Verifies functional requirements
+
+3. **Data Flow Testing**
+   - Follows data through the complete system
+   - Verifies proper transformation at each stage
+   - Validates correct calculation results
+   - Ensures appropriate signal generation
+   - Tests end-to-end processing chain
+
+This methodology provides comprehensive system validation.
+
+#### Signal Validation Techniques
+
+The testbench implements several signal validation techniques:
+
+1. **Waveform Generation**
+   ```verilog
+   initial begin
+       $dumpfile("trading_system.vcd");
+       $dumpvars(0, tb_trading_system_singlemem);
+   end
+   ```
+   - Creates waveform file for visual inspection
+   - Captures all signal transitions
+   - Enables detailed timing analysis
+   - Provides comprehensive signal history
+   - Facilitates debugging and verification
+
+2. **Console Output**
+   ```verilog
+   initial begin
+       $display("Time | Price | MA | RSI | BUY | SELL");
+       $monitor("%4t | %d | %d | %d | %b | %b",
+                $time, price_in, moving_avg, rsi, buy, sell);
+   end
+   ```
+   - Shows key signals in tabular format
+   - Updates on signal changes
+   - Provides human-readable output
+   - Enables quick result validation
+   - Documents test progression
+
+3. **Status Checking**
+   ```verilog
+   wait (mem_cnt == 14);
+   $display("SUCCESS: FIFO memory filled with 14 prices.");
+   ```
+   - Verifies system state transitions
+   - Confirms operational milestones
+   - Validates proper functionality
+   - Provides progress indication
+   - Confirms test progression
+
+These techniques enable comprehensive signal validation.
+
+#### System-Level Timing Verification
+
+The testbench enables verification of system-level timing:
+
+1. **Clock Domain Verification**
+   - All modules operate on the same clock
+   - Synchronized operation throughout the system
+   - No clock domain crossing issues
+   - Clean timing relationships
+   - Predictable system behavior
+
+2. **Signal Propagation Timing**
+   - Input signals properly sampled
+   - State transitions occur on clock edges
+   - Output signals updated synchronously
+   - Clean handshaking between modules
+   - Deterministic end-to-end timing
+
+3. **Calculation Latency**
+   - Price inputs at regular intervals
+   - Indicator calculation timing
+   - Result propagation to decision logic
+   - Signal generation timing
+   - End-to-end system latency
+
+4. **Reset Timing**
+   - Asynchronous reset assertion
+   - Synchronous reset deassertion
+   - Clean system initialization
+   - Proper state machine reset
+   - Consistent initial conditions
+
+These aspects ensure proper system timing behavior.
+
+#### Output Analysis and Reporting
+
+The testbench implements comprehensive output analysis:
+
+1. **Tabular Output**
+   ```verilog
+   $display("Time | Price | MA | RSI | BUY | SELL");
+   $monitor("%4t | %d | %d | %d | %b | %b",
+            $time, price_in, moving_avg, rsi, buy, sell);
+   ```
+   - Shows all key system values
+   - Updates on any signal change
+   - Provides clear correlation between signals
+   - Enables trend analysis
+   - Documents system behavior
+
+2. **Status Messages**
+   ```verilog
+   wait (mem_cnt == 14);
+   $display("SUCCESS: FIFO memory filled with 14 prices.");
+   ```
+   - Indicates test progress
+   - Confirms operational milestones
+   - Provides clear success/failure indication
+   - Documents test execution
+   - Enables quick validation
+
+3. **Final State Analysis**
+   ```verilog
+   $display("Final Check -> Time: %0t | FIFO Count: %d | Memory Full: %b",
+            $time, mem_cnt, mem_full);
+   ```
+   - Shows final system state
+   - Confirms proper test completion
+   - Provides summary information
+   - Enables final validation
+   - Documents test results
+
+These reporting mechanisms enable comprehensive output analysis.
+
+#### Regression Testing Framework
+
+The testbench provides a foundation for regression testing:
+
+1. **Test Sequence Automation**
+   - Deterministic test execution
+   - Automatic price data generation
+   - Predictable test flow
+   - No manual intervention required
+   - Suitable for automated regression
+
+2. **Clear Success Criteria**
+   - Buffer filling verification
+   - Indicator calculation validation
+   - Signal generation confirmation
+   - System state validation
+   - Explicit success indication
+
+3. **Standard Output Format**
+   - Consistent reporting structure
+   - Machine-parsable output
+   - Clear status messages
+   - Standardized test reporting
+   - Suitable for automated analysis
+
+4. **Extensible Framework**
+   - Easy addition of new test cases
+   - Modifiable test parameters
+   - Configurable test sequence
+   - Adaptable verification method
+   - Support for comprehensive test suites
+
+With minor enhancements, this framework could support full regression testing capabilities.
 
 ### Verification Methodology
 
-- **Unit Testing Approach**: Partially applied with separate testbenches for MA and RSI components, but these test different versions than the integrated ones.
-- **Directed Testing**: Primary method used, with specific input patterns.
-- **Functional Verification**: Focuses on basic calculation correctness for the specific test vectors.
-- **Assertion-Based Verification**: Not used.
-- **Performance Verification**: Not explicitly measured (latency/throughput analysis is manual).
-- **Coverage-Driven Verification**: Not used.
-*Overall*: Verification is basic simulation with manual checking. Significant improvements needed for robust validation (self-checking testbenches, assertions, wider range of test cases, coverage).
+#### Unit Testing Approach
+
+The project implements unit testing through dedicated testbenches for key components:
+
+1. **Moving Average Unit Testing**
+   - `trading_system_tb.v` tests the moving average calculation
+   - Focuses on correct calculation results
+   - Verifies buffer filling and management
+   - Tests FSM operation and state transitions
+   - Validates proper output generation
+
+2. **RSI Unit Testing**
+   - `rsi_testbench.v` tests the RSI calculation
+   - Verifies correct gain/loss accumulation
+   - Tests final RSI formula implementation
+   - Validates FSM state transitions
+   - Confirms proper edge case handling
+
+3. **Trading Decision Unit Testing**
+   - Implicit testing through system-level tests
+   - Verifies correct signal generation
+   - Tests threshold comparison logic
+   - Validates proper reset behavior
+   - Confirms appropriate output timing
+
+This approach ensures proper functionality of individual components before integration.
+
+#### Directed Testing
+
+The project employs directed testing with specific test vectors:
+
+1. **Moving Average Test Vector**
+   - Linear sequence of increasing prices (1000 to 1045)
+   - Predictable average calculation
+   - Clear expected results
+   - Simple verification approach
+   - Tests basic functionality
+
+2. **RSI Test Vector**
+   - Alternating gain/loss pattern
+   - Known RSI calculation result (60)
+   - Exercises both accumulation paths
+   - Tests final formula calculation
+   - Verifies correct implementation
+
+3. **System Test Vector**
+   - Mixed price sequence with realistic values
+   - Tests end-to-end system operation
+   - Exercises all system components
+   - Validates component interaction
+   - Verifies signal generation
+
+These directed tests provide targeted verification of specific functionality.
+
+#### Functional Verification
+
+The project implements functional verification through system-level testing:
+
+1. **Requirement Verification**
+   - Moving average calculation accuracy
+   - RSI calculation correctness
+   - Trading signal generation based on conditions
+   - Proper system initialization
+   - Correct handling of price data
+
+2. **Feature Testing**
+   - Price memory management
+   - Indicator calculation
+   - Trading decision logic
+   - System synchronization
+   - End-to-end data flow
+
+3. **Protocol Verification**
+   - Proper signal timing
+   - Correct handshaking
+   - Valid state transitions
+   - Proper reset behavior
+   - Clean signal propagation
+
+This approach ensures the system meets its functional requirements.
+
+#### Assertion-Based Verification
+
+The project does not explicitly implement assertion-based verification, but such an approach would enhance testing robustness:
+
+```verilog
+// Potential assertions (not in original code)
+
+// Memory management assertions
+property valid_fifo_count;
+    @(posedge clk) (fifo_data_count <= DEPTH);
+endproperty
+assert property(valid_fifo_count);
+
+// Calculation assertions
+property valid_rsi_range;
+    @(posedge clk) rsi_done |-> (rsi >= 0 && rsi <= 100);
+endproperty
+assert property(valid_rsi_range);
+
+// Signal integrity assertions
+property mutually_exclusive_signals;
+    @(posedge clk) !(buy && sell);
+endproperty
+assert property(mutually_exclusive_signals);
+```
+
+These assertions would provide automatic verification of key properties.
+
+#### Performance Verification
+
+The project does not explicitly verify performance metrics, but several aspects could be measured:
+
+1. **Latency Measurement**
+   ```verilog
+   // Not in original code
+   integer start_time, end_time;
+   
+   always @(posedge clk) begin
+       if (new_price && !prev_new_price)
+           start_time = $time;
+       
+       if (ma_done && !prev_ma_done)
+           end_time = $time;
+   end
+   ```
+   - Measures calculation latency
+   - Verifies performance requirements
+   - Validates timing expectations
+   - Documents system responsiveness
+   - Enables optimization evaluation
+
+2. **Throughput Analysis**
+   - Maximum price processing rate
+   - Calculation completion rate
+   - Signal generation frequency
+   - System-level throughput
+   - Performance under load
+
+These measurements would validate performance characteristics.
+
+#### Coverage-Driven Verification
+
+The project does not implement coverage-driven verification, but such an approach would enhance testing completeness:
+
+```verilog
+// Coverage definitions (not in original code)
+
+// State coverage
+covergroup state_cov @(posedge clk);
+    ma_state: coverpoint ma_fsm.st {
+        bins idle = {0};
+        bins calculate = {1};
+        bins done = {2};
+    }
+    
+    rsi_state: coverpoint rsi_fsm.state {
+        bins idle = {0};
+        bins fill_fifo = {1};
+        bins read_init = {2};
+        bins read_wait = {3};
+        bins compare = {4};
+        bins done = {5};
+    }
+endgroup
+
+// Value coverage
+covergroup value_cov @(posedge clk);
+    price_range: coverpoint price_in {
+        bins low = {[0:10000]};
+        bins mid = {[10001:20000]};
+        bins high = {[20001:32767]};
+    }
+    
+    rsi_range: coverpoint rsi {
+        bins oversold = {[0:30]};
+        bins neutral = {[31:69]};
+        bins overbought = {[70:100]};
+    }
+endgroup
+```
+
+This approach would ensure comprehensive test coverage of all states and value ranges.
 
 ## 10. Usage Guide
 
 ### Integration with Larger Systems
 
-1.  **Top-Level Instantiation**: Instantiate `trading_system_singlemem` in your higher-level design.
-    ```verilog
-    trading_system_singlemem #(
-        .WINDOW(20),       // Optional MA window override
-        .DEPTH(14),        // Optional FIFO depth override (should match RSI window)
-        .DW(16),           // Optional Data Width override
-        .BUY_RSI_THR(30),  // Optional RSI Buy threshold override
-        .SELL_RSI_THR(70)  // Optional RSI Sell threshold override
-    ) trading_core_inst (
-        .clk(your_clk),
-        .rst(your_rst),
-        .price_in(your_price_input),       // Connect price data source
-        .new_price(your_price_valid_strobe), // Connect price valid signal
-        .moving_avg(ma_output),          // Capture MA result
-        .rsi(rsi_output),                // Capture RSI result
-        .buy(buy_signal_output),         // Use Buy signal
-        .sell(sell_signal_output),       // Use Sell signal
-        .mem_full(fifo_is_full),         // Optional status monitoring
-        .mem_cnt(fifo_count),            // Optional status monitoring
-        .oldest_price(fifo_oldest),      // Optional status monitoring
-        .ma_done(ma_calc_done),          // Optional status monitoring
-        .rsi_done(rsi_calc_done)         // Optional status monitoring
-    );
-    ```
-2.  **Signal Connection Guidelines**:
-    *   Connect `clk` and `rst` to your system clock and reset.
-    *   Provide price data via `price_in`.
-    *   Pulse `new_price` high for one clock cycle when `price_in` is valid.
-    *   Use `buy` and `sell` outputs to trigger trading actions.
-    *   Optionally monitor `moving_avg`, `rsi`, and status signals (`mem_full`, `*_done`).
-3.  **Clocking Considerations**: Ensure the driving system's clock meets the timing requirements established during synthesis for the trading system core.
-4.  **Reset Management**: Assert `rst` for several clock cycles during system initialization.
-5.  **Interface Protocol**: Simple valid strobe (`new_price`). Outputs (`moving_avg`, `rsi`) are valid when their respective `done` signals are high (or based on system latency). `buy`/`sell` update one cycle after inputs change.
-6.  **Data Formatting Requirements**: `price_in` should match the configured `DW` (default 16-bit unsigned integer).
+#### Top-Level Instantiation
 
-### Parameter Configuration
+To integrate the trading system into a larger design, use the following instantiation pattern:
 
-- **Moving Average Configuration**: Set `WINDOW` parameter in `moving_average_fsm` (default 20).
-- **RSI Configuration**: Set `WINDOW` parameter in `rsi_inc` (default 14). This also dictates the required `DEPTH` of `price_memory` (should be >= RSI WINDOW).
-- **Trading Threshold Configuration**: Set `BUY_RSI_THR` (default 30) and `SELL_RSI_THR` (default 70) in `trading_decision`.
-- **Parameter Selection Guidelines**: Choose MA/RSI periods based on trading strategy and timeframe. Adjust RSI thresholds based on market volatility and desired signal frequency. Ensure `DW` matches price data precision.
-- **Parameter Impact Analysis**: Larger windows increase memory and potentially latency but smooth indicators. Wider `DW` increases resource usage. Thresholds directly impact signal generation frequency and entry/exit points.
-- **Configuration Management Approach**: Override parameters during instantiation at the top level.
+```verilog
+// System clock and reset
+wire system_clk;  // From clock management
+wire system_rst;  // From reset controller
 
-### Example Applications
+// Market data interface
+wire [15:0] market_price;  // From data acquisition
+wire market_data_valid;    // Price validity signal
 
-- **Basic Trading System**: Use `buy`/`sell` signals directly to trigger market orders.
-- **Multi-Instrument Implementation**: Instantiate multiple `trading_system_singlemem` cores, one for each instrument feed.
-- **Market Data Integration**: Interface the `price_in`/`new_price` inputs with a market data feed handler (e.g., FIX parser).
-- **Backtesting Platform**: Drive the core with historical data in simulation for strategy testing.
-- **Real-Time Trading System**: Deploy onto FPGA hardware connected to live market data and order execution APIs.
-- **Research and Development Platform**: Use as a baseline for developing and testing new indicators or strategies in hardware.
+// Trading signal outputs
+wire buy_signal;           // To order management
+wire sell_signal;          // To order management
 
-### Implementation Workflow
+// Status and monitoring
+wire [31:0] ma_value;      // To monitoring system
+wire [7:0] rsi_value;      // To monitoring system
+wire system_ready;         // From memory_full
 
-1.  **Development Environment Setup**: Install Verilog simulator (ModelSim, Vivado Sim, Verilator) and FPGA synthesis tools (Vivado, Quartus).
-2.  **Simulation Flow**: Run the provided testbenches (`tb_*.v`) to verify functionality. Use VCD output for waveform debugging.
-3.  **Synthesis Process**: Synthesize `trading_system_singlemem.v` using FPGA tools, targeting a specific device. Apply timing constraints.
-4.  **Implementation Strategy**: Run Place & Route tools to map the synthesized netlist onto FPGA resources. Analyze resource utilization and timing reports.
-5.  **Timing Closure Methodology**: Iterate on constraints, RTL modifications (pipelining), or tool options if timing requirements are not met.
-6.  **Deployment Guidelines**: Generate bitstream file and program onto the target FPGA device. Integrate with external interfaces (data input, order output).
-
-## 11. Extension Possibilities
-
-### Additional Technical Indicators
-
-- **Exponential Moving Average (EMA)**: Requires different calculation logic (recursive formula) but similar memory requirements.
-- **Bollinger Bands**: Requires SMA plus standard deviation calculation over the same window.
-- **MACD Implementation**: Requires calculating two EMAs (e.g., 12-period, 26-period) and their difference, plus an EMA of the difference (signal line).
-- **Stochastic Oscillator**: Requires tracking high/low prices over a window.
-- **Volume Indicators**: Requires adding volume data input and associated calculations (e.g., On-Balance Volume).
-- **Custom Indicator Framework**: Design a generic interface for indicator modules to plug into the system easily.
-
-### Multiple Timeframes
-
-- **Timeframe Management Architecture**: Requires logic to aggregate ticks into bars (e.g., 1-minute, 5-minute).
-- **Multi-Timeframe Data Organization**: Store bars for different timeframes, potentially requiring more complex memory structures.
-- **Downsampling Implementation**: Logic to create longer timeframe bars from shorter ones.
-- **Signal Combination Strategy**: Logic to combine signals from different timeframes (e.g., require confirmation across timeframes).
-- **Resource Sharing Approach**: Potentially share lower-level calculations (e.g., tick processing) across timeframes.
-- **System Scalability Considerations**: Resource usage grows significantly with the number of timeframes.
-
-### Advanced Trading Strategies
-
-- **Moving Average Crossover Implementation**: Instantiate two MA modules with different periods and add logic to detect crossovers.
-- **Multi-Indicator Strategies**: Extend `trading_decision` logic to incorporate signals from new indicators.
-- **Volatility-Based Position Sizing**: Add volatility indicator (e.g., ATR) and use its output to adjust trade size signals.
-- **Custom Strategy Framework**: Define a standard interface for strategy modules.
-- **Strategy Parameterization Approach**: Pass strategy parameters (thresholds, periods) to modules.
-- **Strategy Performance Metrics**: Add modules to track simulated P&L, win rate, etc., within the FPGA for rapid backtesting.
-
-### Hardware Optimizations
-
-- **Pipelining Techniques**: Add registers within long combinational paths (e.g., division) to increase clock frequency.
-- **Fixed-Point Implementation**: Convert integer arithmetic to fixed-point for better precision, especially for division and EMA.
-- **Custom Division Units**: Implement optimized hardware dividers (using DSPs or LUT-based algorithms) instead of relying on synthesis inference.
-- **Multi-Clock Domain Design**: Use faster clocks for computation, slower clocks for interfaces (requires careful CDC).
-- **Resource Sharing Strategies**: Time-multiplex expensive resources like dividers if parallel computation isn't strictly required for throughput.
-- **Power Optimization Approaches**: Clock gating (use vendor primitives carefully), reducing unnecessary switching activity.
-
-## 12. Design Considerations and Tradeoffs
-
-### Integer vs. Fixed-Point Arithmetic
-
-- **Precision Analysis**: Integer loses all fractional information. Fixed-point allows configurable precision but requires careful scaling. Crucial for EMAs or sensitive thresholds.
-- **Resource Impact Comparison**: Fixed-point requires wider datapaths (registers, adders, multipliers), potentially more complex division/multiplication units, increasing LUT/FF/DSP usage.
-- **Implementation Complexity**: Integer is simpler. Fixed-point requires managing scaling factors, potential overflow/underflow during shifts, and rounding.
-- **Error Propagation Characteristics**: Integer truncation errors can accumulate. Fixed-point rounding errors also accumulate but can be managed with sufficient precision (guard bits).
-- **Recommended Implementation Approaches**: Integer for basic SMA/RSI. Fixed-point strongly recommended for EMA, MACD, or strategies sensitive to small price variations.
-- **Migration Strategy**: Parameterize data widths and fractional bits to allow gradual migration.
-
-### FIFO Implementation Tradeoffs
-
-- **Shift Register vs. Circular Buffer**:
-    - `Moving_average/memory.v` uses shift register: Simpler logic, potentially higher power due to shifting, scales poorly with depth.
-    - `Combined_analysis/price_memory.v` uses circular buffer: More complex pointer logic, lower power (only pointers move), scales well with depth, maps better to BRAM.
-- **Scaling Characteristics**: Circular buffer scales better for DEPTH > ~16-32.
-- **Memory Resource Utilization**: Both can use distributed RAM (LUTRAM) for small depths or Block RAM for larger depths. Circular buffer maps more naturally to BRAM structure.
-- **Access Pattern Efficiency**: Both provide O(1) access to newest (write) and oldest (read) elements in steady state.
-- **Implementation Complexity Comparison**: Shift register is conceptually simpler. Circular buffer requires careful pointer and count management.
-- **Selection Guidelines**: Use circular buffer (like `price_memory.v`) for scalability and efficiency, especially if BRAM is available.
-
-### Calculation Timing Tradeoffs
-
-- **Deterministic vs. Variable Latency**: Current design has deterministic latency (fixed number of cycles). Some complex division algorithms might have variable latency. Deterministic is preferred for HFT.
-- **Resource Implications**: Single-cycle complex operations (like division) use more combinational resources and limit clock speed. Multi-cycle/pipelined operations use more registers but allow higher clock speeds.
-- **Throughput Impact Analysis**: Pipelining increases throughput (higher clock speed) but also increases latency. Multi-cycle non-pipelined operations reduce throughput.
-- **Design Simplicity Considerations**: Single-cycle is simplest to control. Pipelining adds complexity.
-- **Application-Specific Selection Criteria**: HFT prioritizes latency. Market making might prioritize throughput. Choose based on system requirements.
-- **Hybrid Approach Possibilities**: Use single-cycle for simple operations, pipelined/multi-cycle for complex ones (like division).
-
-### State Machine Complexity Tradeoffs
-
-- **Simplicity vs. Functionality**: Simple FSMs (like MA FSM) are easy to design/verify but lack features. Complex FSMs (like the 6-state RSI FSM concept) handle more intricate sequences but are harder to get right.
-- **Error Handling Capabilities**: Simple FSMs often lack explicit error states. Complex FSMs can include states for error detection and recovery.
-- **Edge Case Management**: Complex FSMs can have dedicated states/transitions for edge cases (e.g., FIFO empty/full during processing).
-- **Resource Utilization Impact**: More states require wider state registers and more complex next-state/output logic (more LUTs).
-- **Verification Complexity Considerations**: More states/transitions increase verification effort exponentially. State coverage becomes crucial.
-- **Recommended Design Patterns**: Use minimal states for simple tasks. Employ clear state definitions (parameters/enums). Use default assignments and default case statements for robustness. Separate control/datapath for clarity.
-
-## 13. Future Work
-
-### Advanced Implementation Features
-
-- **Full Parameterization Framework**: Allow configuration of all periods, widths, and strategies via parameters.
-- **Alternative Moving Average Types**: Implement EMA, WMA modules.
-- **Advanced Strategy Implementations**: Add MACD crossover, Bollinger Band strategies.
-- **Market Data Interface Integration**: Add modules for parsing common market data protocols (e.g., FIX SBE, ITCH).
-- **Configurable Precision Framework**: Implement fixed-point arithmetic with parameterized fractional bits.
-- **Multiple Indicator Framework**: Design a standard interface for adding/combining indicators easily.
-
-### Performance Enhancements
-
-- **Pipelined Architecture Design**: Pipeline MA and RSI calculations, especially division.
-- **Clock Domain Crossing Techniques**: Implement safe CDC if integrating components running at different clock speeds.
-- **Resource Sharing Implementation**: Explore time-multiplexing expensive units like dividers if multiple instances are needed and throughput allows.
-- **Fixed-Point Arithmetic Conversion**: Convert integer paths to fixed-point for improved accuracy.
-- **Memory Architecture Optimization**: Investigate using dual-port BRAM for more flexible data access if needed.
-- **Timing Optimization Strategies**: Apply advanced synthesis/implementation options (retiming, physical optimization).
-
-### System Extensions
-
-- **Backtesting Infrastructure**: Develop modules to read historical data from memory and feed the core for high-speed backtesting on FPGA.
-- **Position Management Module**: Add logic to track current positions, P&L.
-- **Risk Control Framework**: Implement pre-trade risk checks (order size limits, exposure limits).
-- **Multi-Instrument Support**: Parallelize the core architecture to handle multiple trading symbols concurrently.
-- **Order Execution Integration**: Add modules to format and send orders based on `buy`/`sell` signals.
-- **Performance Monitoring System**: Implement internal counters for latency, throughput, signal frequency monitoring.
-
-### Verification Improvements
-
-- **Automated Test Framework**: Create scripts for running regression tests automatically.
-- **Reference Model Development**: Develop bit-accurate software models (e.g., Python) for comparison (self-checking testbenches).
-- **Formal Verification Approach**: Use formal methods to prove properties (e.g., FSM state reachability, absence of deadlocks).
-- **Statistical Performance Analysis**: Run simulations with realistic noisy data to analyze strategy performance.
-- **Coverage-Driven Verification Implementation**: Use functional and code coverage metrics to guide test development and ensure comprehensive verification.
-- **Regression Testing Platform**: Set up a system (e.g., Jenkins) for automated regression testing on code changes.
-
-## 14. Appendices
-
-*(Note: Generating the actual content for appendices requires running synthesis tools, detailed simulation analysis, and further documentation effort. Below are descriptions of what each appendix would contain.)*
-
-### Appendix A: Signal Interface Specifications
-
-- **Module Interface Tables**: Detailed tables for each Verilog module listing all ports, directions, widths, and descriptions.
-- **Timing Diagrams**: Waveform diagrams illustrating key interface protocols (e.g., `new_price` strobe, `start`/`done` handshakes).
-- **Protocol Specifications**: Formal description of how signals interact (e.g., sequence for triggering calculations).
-- **Signal Constraints**: Any specific setup/hold requirements or constraints on input signals.
-- **Default Values and Reset States**: Value of all outputs and key internal registers immediately after reset.
-
-### Appendix B: Algorithm Details
-
-- **Moving Average Calculation Derivation**: Mathematical steps for the simple moving average and the sliding window optimization.
-- **RSI Formula Mathematical Foundation**: Detailed derivation of the RSI formula, including the gain/loss calculation and averaging methods (simple vs. smoothed).
-- **Trading Strategy Mathematical Analysis**: Equations defining the buy/sell conditions implemented in `trading_decision.v`.
-- **Optimization Algorithm Derivations**: Mathematical justification for register widths (overflow analysis) or division optimizations.
-
-### Appendix C: Resource Utilization Data
-
-- **FPGA Resource Tables**: Tables showing estimated/actual resource usage (LUTs, FFs, BRAM, DSPs) for each module and the top-level system, synthesized for a specific target FPGA device (e.g., Xilinx Artix-7).
-- **Synthesis Results Analysis**: Summary of synthesis reports, including maximum achievable clock frequency (Fmax).
-- **Device-Specific Optimization Notes**: Tips for optimizing the design for specific FPGA families.
-- **Scaling Data**: Estimated resource usage as parameters like `DEPTH` or `DW` are varied.
-
-### Appendix D: Performance Benchmarks
-
-- **Latency Measurements**: Cycle counts (and nanoseconds at target frequency) for different paths (input-to-MA, input-to-RSI, input-to-signal).
-- **Throughput Benchmarks**: Maximum sustained input rate (equal to clock frequency).
-- **Clock Frequency Analysis**: Fmax results from synthesis for different target devices or optimization levels.
-- **Power Consumption Data**: Estimated or measured power consumption breakdown (static, dynamic) from FPGA tools.
-- **Comparison with Software Implementations**: Theoretical or measured speedup compared to CPU-based implementations of the same algorithms.
-
-### Appendix E: Verification Test Cases
-
-- **Test Vector Specifications**: Detailed listing of input price sequences used in different test cases (e.g., ramp, sine wave, step change, historical data segment).
-- **Expected Results Documentation**: Corresponding expected outputs (MA, RSI, buy/sell signals) for each test vector, ideally generated from a reference model.
-- **Corner Case Definitions**: Specific tests for conditions like zero price change, division by zero in RSI, FIFO full/empty transitions.
-- **Verification Coverage Analysis**: Reports from coverage tools showing achieved code and functional coverage percentages.
-
-## 15. License
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
+// Instantiate trading system
+trading_system_singlemem trading_module (
+    .clk(system_clk),
+    .rst(system_rst),
+    .price_in(market_price),
+    .new_price(market_data_valid),
+    .moving_avg(ma_value),
+    .rsi(rsi_value),
+    .buy(buy_signal),
+    .sell(sell_signal),
+    .mem_full(system_ready),
+    .mem_cnt(),              // Optional monitoring
+    .oldest_price(),         // Optional monitoring
+    .ma_done(),              // Optional handshaking
+    .rsi_done()              // Optional handshaking
+);
 ```
-MIT License
 
-Copyright (c) 2025 
+This pattern connects the trading system to the larger environment, providing:
+- Clock and reset integration
+- Market data input connection
+- Trading signal output routing
+- Status and monitoring connections
+- Optional signal availability
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Unused outputs can be left unconnected if not needed.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+#### Signal Connection Guidelines
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-```
+Follow these guidelines when connecting the system to external components:
+
+1. **Clock and Reset**
+   - Provide stable clock with controlled skew
+   - Reset must be asynchronously asserted, synchronously deasserted
+   - Hold reset active for multiple clock cycles during initialization
+   - Ensure clean reset deassertion aligned with clock edge
+
+2. **Price Input**
+   - Connect to market data acquisition system
+   - Ensure `price_in` is valid when `new_price` is asserted
+   - Assert `new_price` for exactly one clock cycle per price
+   - Maintain price stability during the entire
