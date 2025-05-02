@@ -18335,9 +18335,6 @@ This pattern provides:
 - Improved system robustness
 
 These recommended design patterns offer structured approaches to managing state machine complexity, balancing functionality, maintainability, and resource utilization. Choosing the right pattern depends on the specific requirements of the module and the overall system architecture.
-# FPGA-Based Technical Analysis Trading System: Implementation Details
-
-## Resource Sharing Strategies
 
 ### Memory Resource Optimization
 
@@ -18777,7 +18774,7 @@ Balancing simplicity and functionality suggests several best practices:
    - Main FSM controls high-level flow, sub-FSMs handle specific operations
    - This approach scales better than monolithic state machines
 
-## Future Work
+## 13. Future Work
 
 ### Advanced Implementation Features
 
@@ -19222,7 +19219,7 @@ Enhanced verification methodologies would strengthen the implementation:
    - Version control integration
    - Change impact analysis
 
-## Appendices
+## 14. Appendices
 
 ### Appendix A: Signal Interface Specifications
 
@@ -19640,7 +19637,7 @@ The FPGA implementation demonstrates superior latency and determinism compared t
    - Certain transition sequences with asynchronous inputs
    - Recommended additional tests for these scenarios
 
-## License
+## 15. License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
