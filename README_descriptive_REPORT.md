@@ -9730,4 +9730,8532 @@ Follow these guidelines when connecting the system to external components:
    - Connect to market data acquisition system
    - Ensure `price_in` is valid when `new_price` is asserted
    - Assert `new_price` for exactly one clock cycle per price
-   - Maintain price stability during the entire
+   - Maintain price stability during the entire assertion period
+   - Provide sufficient spacing between price updates
+
+3. **Indicator Outputs**
+   - Connect to monitoring or visualization systems
+   - Treat as valid only after appropriate `done` signals
+   - Consider registering at destination for timing isolation
+   - Monitor for expected value ranges
+   - Use for system health verification
+
+4. **Trading Signals**
+   - Connect to order management system
+   - Implement appropriate filtering if needed
+   - Consider adding persistence requirements
+   - Ensure proper reset handling
+   - Add protection against rapid oscillation if required
+
+5. **Status Signals**
+   - Use `mem_full` as system ready indicator
+   - Monitor `mem_cnt` for initialization tracking
+   - Connect `ma_done` and `rsi_done` if synchronization needed
+   - Consider adding external watchdog monitoring
+   - Implement appropriate status logging
+
+These connections establish clear interfaces between the trading system and external components.
+
+#### Clocking Considerations
+
+When integrating the system, consider these clocking aspects:
+
+1. **Clock Source**
+   - Provide stable, low-jitter clock source
+   - Typical frequency: 100 MHz (10ns period)
+   - Use global clock resources for distribution
+   - Consider using dedicated PLL/MMCM for clock conditioning
+   - Ensure sufficient margin in timing constraints
+
+2. **Clock Domain Management**
+   - Keep all components in the same clock domain if possible
+   - If crossing domains is necessary, implement proper synchronization:
+     ```verilog
+     // Example synchronizer for crossing domains
+     reg [1:0] sync_new_price;
+     always @(posedge system_clk) begin
+         sync_new_price <= {sync_new_price[0], ext_new_price};
+     end
+     
+     // Edge detection in destination domain
+     wire new_price_pulse = sync_new_price == 2'b01;
+     ```
+   - Use gray coding for multi-bit transfers across domains
+   - Implement proper constraints for CDC paths
+   - Document all clock domain crossings
+
+3. **Clock Distribution**
+   - Use dedicated clock networks
+   - Maintain controlled skew
+   - Implement appropriate buffering
+   - Consider regional clock resources for larger designs
+   - Document clock tree architecture
+
+4. **Timing Constraints**
+   - Define appropriate clock constraints:
+     ```
+     create_clock -period 10.000 -name system_clk [get_ports system_clk]
+     ```
+   - Set realistic input/output delays
+   - Identify false paths where appropriate
+   - Add appropriate clock uncertainty
+   - Ensure proper timing analysis and closure
+
+These considerations ensure reliable clocking throughout the system.
+
+#### Reset Management
+
+Proper reset management is critical for system integration:
+
+1. **Reset Source**
+   - Connect to system-wide reset controller
+   - Ensure proper power-on reset generation
+   - Consider adding watchdog reset capability
+   - Implement manual reset option if needed
+   - Document reset dependencies
+
+2. **Reset Distribution**
+   - Use low-skew network for distribution
+   - Buffer reset signal appropriately
+   - Fan out properly to all components
+   - Maintain synchronous deassertion
+   - Consider reset tree hierarchy for large systems
+
+3. **Reset Timing**
+   - Assert reset asynchronously (active high)
+   - Hold reset for multiple clock cycles (10+ recommended)
+   - Deassertion synchronized to clock edge:
+     ```verilog
+     // Synchronous reset deassertion
+     reg [2:0] reset_sync;
+     always @(posedge clk) begin
+         if (raw_reset)
+             reset_sync <= 3'b111;
+         else
+             reset_sync <= {reset_sync[1:0], 1'b0};
+     end
+     
+     wire synchronized_reset = reset_sync[2];
+     ```
+   - Ensure all components see reset deassertion on same cycle
+   - Document reset timing requirements
+
+4. **Post-Reset Sequence**
+   - Allow sufficient time for memory initialization
+   - Monitor `mem_cnt` to track buffer filling progress
+   - Wait for `mem_full` assertion before using results
+   - Implement appropriate timeout monitoring
+   - Document expected post-reset behavior
+
+These guidelines ensure proper system initialization and recovery.
+
+#### Interface Protocol
+
+The trading system uses a simple interface protocol:
+
+1. **Price Data Input Protocol**
+   - `price_in`: Valid price data
+   - `new_price`: One-cycle pulse indicating valid data
+   - No backpressure mechanism (always ready)
+   - No handshaking required
+   - Sequential price feeding
+
+2. **Indicator Output Protocol**
+   - `moving_avg`, `rsi`: Calculation results
+   - `ma_done`, `rsi_done`: One-cycle pulses indicating completion
+   - Results valid when done signals are asserted
+   - Values stable between updates
+   - Independent timing for each indicator
+
+3. **Signal Output Protocol**
+   - `buy`, `sell`: Trading signals
+   - Level-sensitive (remain active while conditions met)
+   - Mutually exclusive by design
+   - Update after indicator calculation
+   - Reset clears both signals
+
+4. **Status Protocol**
+   - `mem_full`: Level-sensitive ready indicator
+   - `mem_cnt`: Current buffer fill level
+   - States reflect internal system status
+   - Continuous status indication
+   - No explicit acknowledgment required
+
+This protocol design balances simplicity with clear timing relationships.
+
+#### Data Formatting Requirements
+
+The system expects specific data formats:
+
+1. **Price Format**
+   - 16-bit unsigned integer
+   - Represents price value directly
+   - No decimal point (implied fixed-point)
+   - Range: 0 to 65,535
+   - Consider pre-scaling if required:
+     ```verilog
+     // Example: Convert external price format to system format
+     wire [15:0] system_price = external_price[23:8]; // Extract upper bits
+     // OR
+     wire [15:0] system_price = external_price >> 8; // Shift 8 bits
+     ```
+
+2. **Indicator Output Format**
+   - Moving Average: 32-bit unsigned integer
+     - Integer representation
+     - Same scale as input prices
+     - Upper 16 bits typically zero (unless very large prices)
+   - RSI: 8-bit unsigned integer
+     - Range: 0 to 100
+     - Integer percentage representation
+     - No decimal point
+
+3. **Signal Format**
+   - Single-bit active high
+   - 1'b1: Signal active
+   - 1'b0: Signal inactive
+   - Level-sensitive (not edge-triggered)
+   - Held active while conditions remain met
+
+4. **Status Format**
+   - `mem_full`: Single-bit active high
+   - `mem_cnt`: 5-bit unsigned counter (0-31)
+   - Binary representation
+   - Direct indicator of buffer state
+
+These format specifications ensure proper data interpretation throughout the system.
+
+### Parameter Configuration
+
+#### Moving Average Configuration
+
+The Moving Average module supports parameterized configuration:
+
+```verilog
+module moving_average_fsm #(
+    parameter WINDOW = 20,  // Window size for moving average
+    parameter DW     = 16   // Data width for prices
+)(
+    // Port list...
+);
+```
+
+Key configuration parameters:
+
+1. **WINDOW Parameter**
+   - Default: 20 periods
+   - Common alternatives:
+     - 5, 10: Very short-term trend
+     - 20, 21: Short-term trend (standard)
+     - 50: Medium-term trend
+     - 100, 200: Long-term trend
+   - Trading strategy considerations:
+     - Smaller windows: More responsive, more noise
+     - Larger windows: Smoother, more lag
+     - Multiple windows: Crossover strategies
+   - Resource impact:
+     - Minimal effect on resource utilization
+     - Primarily affects price memory size
+     - No impact on calculation complexity (O(1))
+
+2. **DW Parameter (Data Width)**
+   - Default: 16 bits
+   - Common alternatives:
+     - 8-bit: Limited price range, minimal resources
+     - 16-bit: Standard for most applications
+     - 24-bit: High-precision or high-value instruments
+     - 32-bit: Maximum precision, higher resource usage
+   - Representation considerations:
+     - Implied fixed-point positioning
+     - Scale factor must match across modules
+     - Potential overflow in extreme cases
+   - Resource impact:
+     - Linear scaling with width
+     - Affects memory and register usage
+     - Influences arithmetic complexity
+
+3. **Configuration Examples**:
+   ```verilog
+   // Short-term trend detection
+   moving_average_fsm #(
+       .WINDOW(10),
+       .DW(16)
+   ) ma_short (
+       // Port connections...
+   );
+   
+   // Long-term trend detection
+   moving_average_fsm #(
+       .WINDOW(200),
+       .DW(16)
+   ) ma_long (
+       // Port connections...
+   );
+   ```
+
+These parameters enable customization for different trading strategies and market conditions.
+
+#### RSI Configuration
+
+The RSI module also supports parameterized configuration:
+
+```verilog
+module rsi_inc #(
+    parameter WINDOW = 14,  // Period for RSI calculation
+    parameter DW     = 16   // Data width for prices
+)(
+    // Port list...
+);
+```
+
+Key configuration parameters:
+
+1. **WINDOW Parameter**
+   - Default: 14 periods (standard Wilder parameter)
+   - Common alternatives:
+     - 9: More responsive, used for short-term strategies
+     - 14: Standard setting (Wilder's original)
+     - 21, 25: Smoother oscillation, less noise
+   - Trading strategy considerations:
+     - Smaller windows: More signals, higher false positive rate
+     - Larger windows: Fewer signals, may miss opportunities
+     - Multiple RSIs: Confirmation across timeframes
+   - Resource impact:
+     - Affects FIFO depth and sample count
+     - Minimal effect on calculation logic
+     - Influences overall latency
+
+2. **DW Parameter (Data Width)**
+   - Default: 16 bits
+   - Same considerations as Moving Average
+   - Must match across system for consistency
+   - Affects price storage and comparison precision
+
+3. **Implementation Note**:
+   - The actual calculation period is (WINDOW-1)
+   - This accounts for price differences calculation
+   - e.g., WINDOW=14 means 13 price differences
+   - Consistent with standard RSI implementation
+   - Documentation should reflect this behavior
+
+4. **Configuration Examples**:
+   ```verilog
+   // Responsive RSI for short-term trading
+   rsi_inc #(
+       .WINDOW(9),
+       .DW(16)
+   ) rsi_short (
+       // Port connections...
+   );
+   
+   // Standard RSI configuration
+   rsi_inc #(
+       .WINDOW(14),
+       .DW(16)
+   ) rsi_standard (
+       // Port connections...
+   );
+   ```
+
+These parameters enable RSI customization for different trading approaches.
+
+#### Trading Threshold Configuration
+
+The Trading Decision module supports customizable thresholds:
+
+```verilog
+module trading_decision #(
+    parameter BUY_RSI_THR  = 8'd30,  // RSI threshold for buy signals
+    parameter SELL_RSI_THR = 8'd70   // RSI threshold for sell signals
+)(
+    // Port list...
+);
+```
+
+Key configuration parameters:
+
+1. **BUY_RSI_THR Parameter**
+   - Default: 30 (standard oversold level)
+   - Common alternatives:
+     - 20-25: More aggressive buying (stronger oversold condition)
+     - 30-35: Standard range for most markets
+     - 40-45: Conservative buying (weaker oversold condition)
+   - Trading strategy considerations:
+     - Lower values: Fewer but stronger signals
+     - Higher values: More frequent but weaker signals
+     - Market-specific optimization recommended
+
+2. **SELL_RSI_THR Parameter**
+   - Default: 70 (standard overbought level)
+   - Common alternatives:
+     - 75-80: More aggressive selling (stronger overbought)
+     - 65-70: Standard range for most markets
+     - 55-60: Conservative selling (weaker overbought)
+   - Trading strategy considerations:
+     - Higher values: Fewer but stronger signals
+     - Lower values: More frequent but weaker signals
+     - Should balance with BUY_RSI_THR
+
+3. **Strategy Configuration Examples**:
+   ```verilog
+   // Conservative strategy (fewer signals, stronger conditions)
+   trading_decision #(
+       .BUY_RSI_THR(20),
+       .SELL_RSI_THR(80)
+   ) conservative_strategy (
+       // Port connections...
+   );
+   
+   // Aggressive strategy (more signals, weaker conditions)
+   trading_decision #(
+       .BUY_RSI_THR(40),
+       .SELL_RSI_THR(60)
+   ) aggressive_strategy (
+       // Port connections...
+   );
+   
+   // Asymmetric strategy (buy/sell bias)
+   trading_decision #(
+       .BUY_RSI_THR(35),  // More conservative buying
+       .SELL_RSI_THR(75)  // More conservative selling
+   ) asymmetric_strategy (
+       // Port connections...
+   );
+   ```
+
+These parameters enable fine-tuning of the trading strategy for different market conditions.
+
+#### Parameter Selection Guidelines
+
+Follow these guidelines when selecting parameters:
+
+1. **Market-Based Selection**
+   - **Volatility Considerations**:
+     - High volatility markets: Longer MA windows, wider RSI thresholds
+     - Low volatility markets: Shorter MA windows, narrower RSI thresholds
+   
+   - **Instrument Characteristics**:
+     - Trending instruments: Favor MA-based signals
+     - Mean-reverting instruments: Favor RSI-based signals
+     - High-value instruments: Consider wider data widths
+   
+   - **Timeframe Matching**:
+     - Match parameters to analysis timeframe
+     - Short-term trading: Shorter windows
+     - Long-term trading: Longer windows
+
+2. **Strategy-Based Selection**
+   - **Trend Following**:
+     - Longer MA windows (50-200)
+     - Extreme RSI thresholds (20/80)
+     - Focus on trend confirmation
+   
+   - **Mean Reversion**:
+     - Shorter MA windows (10-20)
+     - Standard RSI thresholds (30/70)
+     - Focus on oscillator extremes
+   
+   - **Momentum Trading**:
+     - Medium MA windows (20-50)
+     - Modified RSI thresholds (40/60)
+     - Focus on trend strength
+
+3. **Resource-Based Selection**
+   - **Limited Resources**:
+     - Narrower data widths
+     - Shorter window sizes
+     - Fewer parallel instances
+   
+   - **Performance Priority**:
+     - Optimize for critical path reduction
+     - Select power-of-2 window sizes where possible
+     - Consider calculation complexity
+   
+   - **Latency Considerations**:
+     - Shorter windows reduce buffer filling time
+     - Simpler calculations improve throughput
+     - Balance with strategy requirements
+
+4. **Multiple Parameter Sets**
+   - Consider implementing multiple parameter configurations
+   - Test performance across different settings
+   - Enable runtime selection where appropriate
+   - Document expected behavior for each configuration
+   - Provide guidelines for optimal selection
+
+These guidelines help identify the most appropriate parameters for specific applications.
+
+#### Parameter Impact Analysis
+
+Understanding parameter impact helps optimize system configuration:
+
+1. **Window Size Impact**
+   - **Calculation Impact**:
+     - Larger windows require more initialization time
+     - Signal generation delayed until buffer filled
+     - No impact on computational complexity
+     - Affects overall system latency
+     - Influences trading signal frequency
+
+   - **Technical Analysis Impact**:
+     - Larger MA windows: Smoother curve, more lag
+     - Smaller MA windows: More responsive, more noise
+     - Larger RSI windows: Fewer extremes, less trading
+     - Smaller RSI windows: More signals, higher false positive rate
+
+   - **Resource Impact**:
+     - Linear relationship with memory usage
+     - No impact on computational resources
+     - Minimal effect on overall system size
+     - Easily scalable within reasonable ranges
+
+2. **Data Width Impact**
+   - **Precision Impact**:
+     - Wider data: Higher precision calculation
+     - Narrower data: Limited value range
+     - Affects calculation accuracy
+     - Influences signal quality
+     - Critical for high-value instruments
+
+   - **Resource Impact**:
+     - Linear relationship with register width
+     - Affects memory usage
+     - Influences arithmetic complexity
+     - Impacts critical path timing
+     - Scales predictably with width
+
+3. **Threshold Impact**
+   - **Signal Generation Impact**:
+     - Wider thresholds (e.g., 20/80): Fewer, stronger signals
+     - Narrower thresholds (e.g., 40/60): More frequent, weaker signals
+     - Asymmetric thresholds: Directional bias
+     - Directly affects trading frequency
+     - Influences risk/reward profile
+
+   - **Performance Impact**:
+     - No resource utilization impact
+     - No computational complexity impact
+     - Purely strategic parameter
+     - Runtime configurable if needed
+     - Easily modified for optimization
+
+This analysis provides insights for parameter tuning based on specific requirements.
+
+#### Configuration Management Approach
+
+Implement a structured approach to configuration management:
+
+1. **Static Configuration**
+   - Parameter setting at instantiation:
+     ```verilog
+     module top_level (
+         // Ports...
+     );
+         // Module instantiation with static parameters
+         trading_system_singlemem #(
+             .MA_WINDOW(50),
+             .RSI_WINDOW(14),
+             .BUY_RSI_THR(25),
+             .SELL_RSI_THR(75)
+         ) trading_system (
+             // Port connections...
+         );
+     endmodule
+     ```
+   - Compile-time configuration
+   - No runtime overhead
+   - Fixed operational parameters
+   - Clear documentation required
+
+2. **Dynamic Configuration**
+   - Register-based parameter selection:
+     ```verilog
+     // Configuration register examples
+     reg [7:0] buy_threshold_reg = 30;
+     reg [7:0] sell_threshold_reg = 70;
+     
+     // Dynamic threshold selection
+     assign buy_threshold = (config_select) ? buy_threshold_reg : 8'd30;
+     assign sell_threshold = (config_select) ? sell_threshold_reg : 8'd70;
+     ```
+   - Runtime adjustable parameters
+   - Requires additional control logic
+   - Suitable for experimentation
+   - May impact timing or resources
+
+3. **Configuration Management System**
+   - Parameter storage in configuration registers
+   - Control interface for parameter updates
+   - Status reporting of current configuration
+   - Version tracking and documentation
+   - Verification of parameter validity
+
+4. **Documentation Requirements**
+   - Document all parameter settings
+   - Provide rationale for selected values
+   - Include expected behavior notes
+   - Reference testing results
+   - Maintain change history
+
+This approach ensures proper management of system configuration parameters.
+
+### Example Applications
+
+#### Basic Trading System
+
+A basic implementation of the trading system might include:
+
+```verilog
+module basic_trading_system (
+    input  wire        clk,
+    input  wire        rst,
+    input  wire [15:0] price_in,
+    input  wire        new_price,
+    output wire        buy,
+    output wire        sell
+);
+    // Internal signals
+    wire [31:0] moving_avg;
+    wire [7:0]  rsi;
+    wire        mem_full;
+    
+    // Trading system instantiation with default parameters
+    trading_system_singlemem trading_core (
+        .clk(clk),
+        .rst(rst),
+        .price_in(price_in),
+        .new_price(new_price),
+        .moving_avg(moving_avg),
+        .rsi(rsi),
+        .buy(buy),
+        .sell(sell),
+        .mem_full(mem_full)
+    );
+    
+    // Optional: Status LED outputs
+    assign led_ready = mem_full;
+    assign led_buy = buy;
+    assign led_sell = sell;
+endmodule
+```
+
+This basic system:
+- Uses default parameters for all components
+- Provides simple buy/sell signal outputs
+- Includes status indication
+- Requires minimal external components
+- Serves as starting point for customization
+
+Usage scenarios include:
+- Educational demonstration
+- Simple trading strategy validation
+- Basic market analysis
+- Prototype development
+- Initial FPGA implementation
+
+This implementation provides the foundation for more complex trading applications.
+
+#### Multi-Instrument Implementation
+
+A multi-instrument trading system enables analysis of multiple financial instruments simultaneously:
+
+```verilog
+module multi_instrument_system #(
+    parameter NUM_INSTRUMENTS = 4
+)(
+    input  wire                      clk,
+    input  wire                      rst,
+    input  wire [15:0]               prices_in [NUM_INSTRUMENTS-1:0],
+    input  wire [NUM_INSTRUMENTS-1:0] new_prices,
+    output wire [NUM_INSTRUMENTS-1:0] buy_signals,
+    output wire [NUM_INSTRUMENTS-1:0] sell_signals
+);
+    // Per-instrument signals
+    wire [31:0] moving_avgs [NUM_INSTRUMENTS-1:0];
+    wire [7:0]  rsis [NUM_INSTRUMENTS-1:0];
+    wire        mem_fulls [NUM_INSTRUMENTS-1:0];
+    
+    // Generate multiple trading systems
+    genvar i;
+    generate
+        for (i = 0; i < NUM_INSTRUMENTS; i = i + 1) begin: inst
+            trading_system_singlemem trading_inst (
+                .clk(clk),
+                .rst(rst),
+                .price_in(prices_in[i]),
+                .new_price(new_prices[i]),
+                .moving_avg(moving_avgs[i]),
+                .rsi(rsis[i]),
+                .buy(buy_signals[i]),
+                .sell(sell_signals[i]),
+                .mem_full(mem_fulls[i])
+            );
+        end
+    endgenerate
+    
+    // Optional: System-wide status
+    wire system_ready = &mem_fulls;  // All systems initialized
+endmodule
+```
+
+This implementation provides:
+- Parallel analysis of multiple instruments
+- Independent signals for each instrument
+- Scalable design through generation
+- Common clock and reset
+- Efficient resource utilization
+
+Application scenarios include:
+- Portfolio-wide analysis
+- Correlated instrument trading
+- Market sector monitoring
+- Basket trading strategies
+- Exchange-wide analysis
+
+The design scales linearly with instrument count, limited only by FPGA resources.
+
+#### Market Data Integration
+
+Integrating the system with market data sources requires appropriate interfaces:
+
+```verilog
+module market_data_system (
+    input  wire        sys_clk,
+    input  wire        sys_rst,
+    
+    // Market data interface (example)
+    input  wire        md_clk,
+    input  wire        md_valid,
+    input  wire [31:0] md_data,   // Format: [15:0] price, [31:16] symbol_id
+    
+    // Trading interface
+    output wire [3:0]  buy_signals,
+    output wire [3:0]  sell_signals
+);
+    // Clock domain crossing
+    wire        md_valid_sync;
+    wire [31:0] md_data_sync;
+    
+    cdc_synchronizer md_sync (
+        .src_clk(md_clk),
+        .dst_clk(sys_clk),
+        .src_data({md_valid, md_data}),
+        .dst_data({md_valid_sync, md_data_sync})
+    );
+    
+    // Symbol demultiplexer
+    wire [15:0] symbol_id = md_data_sync[31:16];
+    wire [15:0] price = md_data_sync[15:0];
+    
+    reg [3:0] price_valid;
+    reg [15:0] prices [3:0];
+    
+    always @(posedge sys_clk) begin
+        price_valid <= 4'b0000;  // Default: no valid prices
+        
+        if (md_valid_sync) begin
+            case (symbol_id[1:0])  // Example: use 2 bits for routing
+                2'b00: begin prices[0] <= price; price_valid[0] <= 1'b1; end
+                2'b01: begin prices[1] <= price; price_valid[1] <= 1'b1; end
+                2'b10: begin prices[2] <= price; price_valid[2] <= 1'b1; end
+                2'b11: begin prices[3] <= price; price_valid[3] <= 1'b1; end
+            endcase
+        end
+    end
+    
+    // Multi-instrument system
+    multi_instrument_system #(
+        .NUM_INSTRUMENTS(4)
+    ) trading_system (
+        .clk(sys_clk),
+        .rst(sys_rst),
+        .prices_in(prices),
+        .new_prices(price_valid),
+        .buy_signals(buy_signals),
+        .sell_signals(sell_signals)
+    );
+endmodule
+```
+
+This implementation provides:
+- Clock domain crossing for market data
+- Demultiplexing by instrument/symbol
+- Appropriate synchronization
+- Integration with multi-instrument system
+- Clean interface separation
+
+Integration scenarios include:
+- Exchange data feed connection
+- Market simulator interface
+- Multi-source aggregation
+- Time-series database interface
+- Real-time trading systems
+
+This design pattern enables connection to various market data sources.
+
+#### Backtesting Platform
+
+A backtesting platform enables historical strategy evaluation:
+
+```verilog
+module backtesting_platform (
+    input  wire        clk,
+    input  wire        rst,
+    
+    // Historical data interface
+    input  wire        data_valid,
+    input  wire [31:0] timestamp,
+    input  wire [15:0] price,
+    output wire        data_ready,
+    
+    // Result capture interface
+    output wire        signal_valid,
+    output wire [31:0] signal_timestamp,
+    output wire        buy_signal,
+    output wire        sell_signal,
+    output wire [31:0] moving_avg,
+    output wire [7:0]  rsi
+);
+    // Flow control
+    wire mem_full;
+    assign data_ready = 1'b1;  // Always ready for data
+    
+    // Trading system
+    wire buy, sell;
+    wire [31:0] ma_value;
+    wire [7:0]  rsi_value;
+    
+    trading_system_singlemem trading_core (
+        .clk(clk),
+        .rst(rst),
+        .price_in(price),
+        .new_price(data_valid),
+        .moving_avg(ma_value),
+        .rsi(rsi_value),
+        .buy(buy),
+        .sell(sell),
+        .mem_full(mem_full)
+    );
+    
+    // Signal timestamp capture
+    reg [31:0] last_timestamp;
+    always @(posedge clk) begin
+        if (data_valid)
+            last_timestamp <= timestamp;
+    end
+    
+    // Result output with timestamp
+    assign signal_valid = buy || sell;
+    assign signal_timestamp = last_timestamp;
+    assign buy_signal = buy;
+    assign sell_signal = sell;
+    assign moving_avg = ma_value;
+    assign rsi = rsi_value;
+endmodule
+```
+
+This implementation provides:
+- Historical data processing
+- Time-stamped signal generation
+- Complete indicator output
+- Result capture for analysis
+- Efficient backtesting execution
+
+Application scenarios include:
+- Strategy optimization
+- Parameter tuning
+- Historical performance analysis
+- Comparative strategy evaluation
+- Trading system validation
+
+This design enables comprehensive backtesting for strategy development.
+
+#### Real-Time Trading System
+
+A real-time trading system connects technical analysis with order execution:
+
+```verilog
+module realtime_trading_system (
+    input  wire        clk,
+    input  wire        rst,
+    
+    // Market data interface
+    input  wire        price_valid,
+    input  wire [15:0] price,
+    
+    // Position management interface
+    input  wire        have_position,
+    input  wire        can_buy,
+    input  wire        can_sell,
+    
+    // Order execution interface
+    output reg         exec_buy,
+    output reg         exec_sell
+);
+    // Trading signals
+    wire buy_signal, sell_signal;
+    wire [31:0] ma_value;
+    wire [7:0]  rsi_value;
+    wire mem_full;
+    
+    // Technical analysis system
+    trading_system_singlemem trading_core (
+        .clk(clk),
+        .rst(rst),
+        .price_in(price),
+        .new_price(price_valid),
+        .moving_avg(ma_value),
+        .rsi(rsi_value),
+        .buy(buy_signal),
+        .sell(sell_signal),
+        .mem_full(mem_full)
+    );
+    
+    // Order execution logic
+    always @(posedge clk) begin
+        if (rst) begin
+            exec_buy <= 1'b0;
+            exec_sell <= 1'b0;
+        end else begin
+            // Default: no execution
+            exec_buy <= 1'b0;
+            exec_sell <= 1'b0;
+            
+            // Execute buy only when:
+            // 1. Buy signal is active
+            // 2. System is ready (memory full)
+            // 3. No current position
+            // 4. Trading allowed (can_buy)
+            if (buy_signal && mem_full && !have_position && can_buy)
+                exec_buy <= 1'b1;
+                
+            // Execute sell only when:
+            // 1. Sell signal is active
+            // 2. System is ready (memory full)
+            // 3. Have existing position
+            // 4. Trading allowed (can_sell)
+            if (sell_signal && mem_full && have_position && can_sell)
+                exec_sell <= 1'b1;
+        end
+    end
+endmodule
+```
+
+This implementation provides:
+- Real-time signal generation
+- Position status integration
+- Trading permission checks
+- Order execution interface
+- Safe trading logic
+
+Application scenarios include:
+- Algorithmic trading systems
+- Automated trading platforms
+- High-frequency trading
+- Market making systems
+- Agency trading algorithms
+
+This design creates a complete trading system with appropriate safeguards.
+
+#### Research and Development Platform
+
+A research platform enables experimentation with different trading strategies:
+
+```verilog
+module trading_research_platform (
+    input  wire        clk,
+    input  wire        rst,
+    
+    // Market data interface
+    input  wire        price_valid,
+    input  wire [15:0] price,
+    
+    // Configuration interface
+    input  wire [7:0]  ma_window,
+    input  wire [7:0]  rsi_window,
+    input  wire [7:0]  buy_threshold,
+    input  wire [7:0]  sell_threshold,
+    
+    // Multi-strategy output interface
+    output wire        standard_buy,
+    output wire        standard_sell,
+    output wire        custom_buy,
+    output wire        custom_sell,
+    
+    // Indicator outputs
+    output wire [31:0] ma_standard,
+    output wire [31:0] ma_custom,
+    output wire [7:0]  rsi_standard,
+    output wire [7:0]  rsi_custom
+);
+    // Standard trading system (default parameters)
+    trading_system_singlemem standard_system (
+        .clk(clk),
+        .rst(rst),
+        .price_in(price),
+        .new_price(price_valid),
+        .moving_avg(ma_standard),
+        .rsi(rsi_standard),
+        .buy(standard_buy),
+        .sell(standard_sell)
+    );
+    
+    // Custom parameter trading system
+    wire price_memory_full;
+    
+    // Custom price memory
+    price_memory #(
+        .DEPTH(rsi_window),
+        .DW(16)
+    ) custom_memory (
+        .clk(clk),
+        .rst(rst),
+        .wr_en(price_valid),
+        .new_price(price),
+        .oldest_price(oldest_price_custom),
+        .full(price_memory_full),
+        .count(memory_count)
+    );
+    
+    // Custom MA with configurable window
+    moving_average_fsm #(
+        .WINDOW(ma_window)
+    ) custom_ma (
+        .clk(clk),
+        .rst(rst),
+        .start(price_memory_full),
+        .new_price(price),
+        .oldest_price(oldest_price_custom),
+        .moving_avg(ma_custom),
+        .done(ma_done_custom)
+    );
+    
+    // Custom RSI with configurable window
+    rsi_inc #(
+        .WINDOW(rsi_window)
+    ) custom_rsi (
+        .clk(clk),
+        .rst(rst),
+        .new_price_strobe(price_memory_full),
+        .new_price(price),
+        .oldest_price(oldest_price_custom),
+        .mem_full(price_memory_full),
+        .mem_count(memory_count),
+        .rsi(rsi_custom),
+        .done(rsi_done_custom)
+    );
+    
+    // Custom trading decision with configurable thresholds
+    trading_decision #(
+        .BUY_RSI_THR(buy_threshold),
+        .SELL_RSI_THR(sell_threshold)
+    ) custom_decision (
+        .clk(clk),
+        .rst(rst),
+        .price_now(price),
+        .moving_avg(ma_custom),
+        .rsi(rsi_custom),
+        .buy(custom_buy),
+        .sell(custom_sell)
+    );
+endmodule
+```
+
+This implementation provides:
+- Side-by-side strategy comparison
+- Configurable parameters
+- Multiple indicator outputs
+- Simultaneous signal generation
+- Research capabilities
+
+Application scenarios include:
+- Strategy development
+- Parameter optimization
+- Comparative analysis
+- Trading algorithm research
+- Educational platforms
+
+This design enables comprehensive research and development of trading strategies.
+
+### Implementation Workflow
+
+#### Development Environment Setup
+
+Setting up an appropriate development environment is critical for successful implementation:
+
+1. **Hardware Development Tools**
+   - FPGA vendor development suite:
+     - Intel Quartus Prime
+     - Xilinx Vivado
+     - Lattice Diamond/Radiant
+   - Version control system (Git, SVN)
+   - Waveform viewer (integrated or standalone)
+   - HDL text editor with syntax highlighting
+   - Documentation tools
+
+2. **Verification Environment**
+   - HDL simulator:
+     - ModelSim/QuestaSim
+     - VCS
+     - Xcelium
+     - Verilator (open source)
+   - Testbench framework
+   - Waveform analysis tools
+   - Automated testing scripts
+   - Coverage analysis tools
+
+3. **Project Structure Setup**
+   ```
+   project/
+   ├── rtl/                  # RTL source files
+   │   ├── price_memory.v
+   │   ├── moving_average_fsm.v
+   │   ├── rsi_inc.v
+   │   ├── trading_decision.v
+   │   └── trading_system_singlemem.v
+   ├── tb/                   # Testbench files
+   │   ├── tb_price_memory.v
+   │   ├── tb_moving_average.v
+   │   ├── tb_rsi.v
+   │   └── tb_trading_system.v
+   ├── sim/                  # Simulation files
+   │   ├── scripts/
+   │   ├── waves/
+   │   └── results/
+   ├── syn/                  # Synthesis files
+   │   ├── constraints/
+   │   └── reports/
+   ├── imp/                  # Implementation files
+   │   ├── constraints/
+   │   └── reports/
+   └── doc/                  # Documentation
+       ├── specs/
+       └── reports/
+   ```
+
+4. **Project Configuration**
+   - Create modular project structure
+   - Set up proper file organization
+   - Configure include paths
+   - Establish build scripts
+   - Define simulation configurations
+   - Document setup process
+
+This environment ensures efficient development, testing, and implementation.
+
+#### Simulation Flow
+
+Follow a structured simulation workflow:
+
+1. **Simulation Setup**
+   - Create appropriate testbench for each module
+   - Prepare test vectors and scenarios
+   - Configure simulation tool settings
+   - Set up waveform capture
+   - Define simulation parameters
+
+2. **Simulation Script Example**
+   ```tcl
+   # ModelSim example simulation script
+   
+   # Create work library
+   vlib work
+   
+   # Compile RTL
+   vlog -work work ../rtl/price_memory.v
+   vlog -work work ../rtl/moving_average_fsm.v
+   vlog -work work ../rtl/rsi_inc.v
+   vlog -work work ../rtl/trading_decision.v
+   vlog -work work ../rtl/trading_system_singlemem.v
+   
+   # Compile testbench
+   vlog -work work ../tb/tb_trading_system.v
+   
+   # Start simulation
+   vsim -t ns work.tb_trading_system
+   
+   # Add waves
+   add wave -divider "Inputs"
+   add wave /tb_trading_system/clk
+   add wave /tb_trading_system/rst
+   add wave /tb_trading_system/price_in
+   add wave /tb_trading_system/new_price
+   
+   add wave -divider "Indicators"
+   add wave /tb_trading_system/moving_avg
+   add wave /tb_trading_system/rsi
+   
+   add wave -divider "Outputs"
+   add wave /tb_trading_system/buy
+   add wave /tb_trading_system/sell
+   
+   # Run simulation
+   run 10 us
+   ```
+
+3. **Simulation Execution**
+   - Run unit-level simulations first
+   - Proceed to integration testing
+   - Verify all functional requirements
+   - Capture and analyze waveforms
+   - Record simulation results
+
+4. **Simulation Iteration**
+   - Fix identified issues
+   - Update test cases as needed
+   - Run regression tests
+   - Verify bug fixes
+   - Document simulation results
+
+5. **Regression Testing**
+   - Create automated regression suite
+   - Include all test cases
+   - Run after any significant changes
+   - Generate comprehensive reports
+   - Maintain test coverage
+
+This workflow ensures thorough functional verification before synthesis.
+
+#### Synthesis Process
+
+Follow a structured synthesis approach:
+
+1. **Synthesis Setup**
+   - Create synthesis project
+   - Add RTL source files
+   - Configure target device
+   - Set up synthesis constraints
+   - Define synthesis options
+
+2. **Constraint Example**
+   ```
+   # Timing constraints for synthesis
+   
+   # Define clock
+   create_clock -period 10.000 -name clk [get_ports clk]
+   
+   # Input/output delays
+   set_input_delay -clock clk 2.000 [get_ports {price_in* new_price rst}]
+   set_output_delay -clock clk 2.000 [get_ports {moving_avg* rsi* buy sell}]
+   
+   # False paths
+   set_false_path -from [get_ports rst] -to [all_registers]
+   ```
+
+3. **Synthesis Execution**
+   - Run initial synthesis
+   - Analyze timing reports
+   - Check resource utilization
+   - Identify critical paths
+   - Address any synthesis errors
+
+4. **Design Optimization**
+   - Improve critical paths
+   - Adjust resource allocation
+   - Apply synthesis directives
+   - Refine constraints
+   - Re-synthesize and verify
+
+5. **Synthesis Reporting**
+   - Generate detailed timing reports
+   - Document resource utilization
+   - Analyze synthesis results
+   - Record optimization steps
+   - Maintain synthesis history
+
+This process ensures efficient translation of RTL to gate-level representation.
+
+#### Implementation Strategy
+
+Follow a comprehensive implementation strategy:
+
+1. **Translation to Target Device**
+   - Map synthesis results to target architecture
+   - Assign logic to specific device resources
+   - Allocate memory elements
+   - Map arithmetic operations to DSP blocks
+   - Generate initial placement
+
+2. **Placement Optimization**
+   - Optimize critical path placement
+   - Minimize routing delays
+   - Balance resource utilization
+   - Consider clock domain organization
+   - Apply placement constraints where needed
+
+3. **Routing**
+   - Complete signal routing
+   - Minimize congestion
+   - Address timing violations
+   - Optimize clock distribution
+   - Apply routing directives if needed
+
+4. **Bitstream Generation**
+   - Generate final implementation
+   - Create programming file
+   - Verify bitstream integrity
+   - Document generation process
+   - Archive final files
+
+5. **Implementation Reports**
+   - Analyze timing results
+   - Review resource utilization
+   - Verify constraint satisfaction
+   - Document implementation details
+   - Record optimization decisions
+
+This strategy ensures optimal implementation on the target FPGA device.
+
+#### Timing Closure Methodology
+
+Implement a structured timing closure approach:
+
+1. **Initial Timing Analysis**
+   - Review timing reports
+   - Identify failing paths
+   - Categorize violations by type:
+     - Setup violations
+     - Hold violations
+     - Multi-cycle paths
+     - Clock domain crossings
+   - Prioritize critical issues
+
+2. **Constraint Refinement**
+   - Adjust timing constraints
+   - Define appropriate clock relationships
+   - Add multi-cycle paths where appropriate
+   - Identify false paths
+   - Document constraint changes
+
+3. **RTL Optimization**
+   - Pipeline critical paths
+   - Reduce logic depth
+   - Balance combinational logic
+   - Optimize resource utilization
+   - Refine state machine encoding
+
+4. **Implementation Adjustments**
+   - Apply placement constraints
+   - Use physical optimization directives
+   - Adjust timing-driven placement
+   - Optimize clock tree synthesis
+   - Address routing congestion
+
+5. **Verification After Changes**
+   - Re-simulate after RTL changes
+   - Verify functional correctness
+   - Run regression tests
+   - Document change impact
+   - Maintain optimization history
+
+This methodology ensures reliable operation at the target clock frequency.
+
+#### Deployment Guidelines
+
+Follow these guidelines for system deployment:
+
+1. **Configuration Management**
+   - Maintain version control
+   - Document all parameter settings
+   - Track configuration changes
+   - Validate configurations
+   - Archive deployment versions
+
+2. **Programming Setup**
+   - Configure programming interface
+   - Set up JTAG or other programming method
+   - Prepare programming files
+   - Verify device connectivity
+   - Document programming process
+
+3. **Testing on Hardware**
+   - Implement basic connectivity tests
+   - Verify clock and reset
+   - Test data input path
+   - Confirm signal generation
+   - Validate indicator calculation
+
+4. **Integration Testing**
+   - Connect to external systems
+   - Test data flow end-to-end
+   - Verify interface timing
+   - Validate system operation
+   - Document integration results
+
+5. **Deployment Documentation**
+   - Record deployment configuration
+   - Document known limitations
+   - Provide operational guidelines
+   - Include troubleshooting information
+   - Maintain deployment history
+
+These guidelines ensure successful deployment and operation of the trading system.
+
+## 11. Extension Possibilities
+
+### Additional Technical Indicators
+
+The system can be extended with various technical indicators to enhance trading strategy capabilities:
+
+#### Exponential Moving Average
+
+An Exponential Moving Average (EMA) assigns more weight to recent prices:
+
+```verilog
+module ema_calculator #(
+    parameter PERIOD = 20,
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    output reg [DW-1:0] ema,
+    output reg done
+);
+    // Smoothing factor: 2/(PERIOD+1)
+    // For PERIOD=20, alpha = 2/21 ≈ 0.0952
+    // Fixed-point representation (8-bit fractional)
+    localparam [15:0] ALPHA_FP = (2 << 8) / (PERIOD + 1);
+    
+    // Implementation state
+    reg initialized = 0;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            ema <= 0;
+            done <= 0;
+            initialized <= 0;
+        end else if (new_data) begin
+            if (!initialized) begin
+                // First value is just the price
+                ema <= price;
+                initialized <= 1;
+                done <= 1;
+            end else begin
+                // EMA = price * alpha + EMA * (1-alpha)
+                // Fixed-point implementation
+                ema <= ((price * ALPHA_FP) + 
+                       (ema * (16'hFF - ALPHA_FP))) >> 8;
+                done <= 1;
+            end
+        end else begin
+            done <= 0;
+        end
+    end
+endmodule
+```
+
+Key implementation features:
+- Fixed-point smoothing factor
+- Efficient recursive calculation
+- Initialization handling
+- Completion signaling
+- Minimal resource requirements
+
+The EMA provides a more responsive trend indicator than the SMA, with reduced lag but potentially more noise sensitivity.
+
+#### Bollinger Bands
+
+Bollinger Bands combine a moving average with standard deviation-based bands:
+
+```verilog
+module bollinger_bands #(
+    parameter PERIOD = 20,
+    parameter STDEV_MULT = 2,  // Typically 2 standard deviations
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] oldest_price,
+    output reg [DW-1:0] middle_band,  // Moving average
+    output reg [DW-1:0] upper_band,   // Upper Bollinger Band
+    output reg [DW-1:0] lower_band,   // Lower Bollinger Band
+    output reg done
+);
+    // Internal signals
+    reg [DW*2-1:0] sum = 0;         // Price sum
+    reg [DW*2-1:0] sum_squares = 0; // Sum of squared prices
+    reg [7:0] count = 0;            // Sample count
+    reg [DW-1:0] prices [PERIOD-1:0]; // Price history
+    reg [31:0] variance;            // Price variance
+    reg [15:0] stdev;               // Standard deviation
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, COLLECT = 1, CALCULATE = 2, COMPLETE = 3;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset logic
+            state <= IDLE;
+            sum <= 0;
+            sum_squares <= 0;
+            count <= 0;
+            done <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        state <= COLLECT;
+                        count <= (count < PERIOD) ? count + 1 : PERIOD;
+                        
+                        // Update sums (add new, remove oldest if full)
+                        if (count == PERIOD) begin
+                            sum <= sum + price - oldest_price;
+                            sum_squares <= sum_squares + (price * price) - 
+                                          (oldest_price * oldest_price);
+                        end else begin
+                            sum <= sum + price;
+                            sum_squares <= sum_squares + (price * price);
+                        end
+                        
+                        // Store price in history array
+                        for (int i = PERIOD-1; i > 0; i = i - 1)
+                            prices[i] <= prices[i-1];
+                        prices[0] <= price;
+                    end
+                end
+                
+                COLLECT: begin
+                    if (count == PERIOD) begin
+                        state <= CALCULATE;
+                    end else begin
+                        state <= IDLE;
+                    end
+                end
+                
+                CALCULATE: begin
+                    // Calculate moving average
+                    middle_band <= sum / PERIOD;
+                    
+                    // Calculate variance: (sum_squares - (sum²/n))/n
+                    variance <= (sum_squares - ((sum * sum) / PERIOD)) / PERIOD;
+                    
+                    // Calculate standard deviation (sqrt of variance)
+                    // Approximate using a simple algorithm
+                    // For production, use a proper CORDIC implementation
+                    stdev <= approximate_sqrt(variance);
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    // Calculate bands
+                    upper_band <= middle_band + (stdev * STDEV_MULT);
+                    lower_band <= (middle_band > (stdev * STDEV_MULT)) ? 
+                                  (middle_band - (stdev * STDEV_MULT)) : 0;
+                    
+                    // Signal completion
+                    done <= 1;
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key implementation features:
+- Combined calculation of mean and standard deviation
+- Square root approximation (simplified here)
+- Configurable standard deviation multiplier
+- Upper and lower band calculation
+- Complete state machine implementation
+
+Bollinger Bands are useful for:
+- Volatility measurement
+- Potential breakout identification
+- Mean reversion strategies
+- Trend strength assessment
+- Channel trading approaches
+
+The implementation can be optimized further with specialized square root circuits.
+
+#### MACD Implementation
+
+The Moving Average Convergence Divergence (MACD) indicator combines multiple EMAs:
+
+```verilog
+module macd_calculator #(
+    parameter FAST_PERIOD = 12,
+    parameter SLOW_PERIOD = 26,
+    parameter SIGNAL_PERIOD = 9,
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    output reg [DW-1:0] macd_line,    // MACD Line (Fast EMA - Slow EMA)
+    output reg [DW-1:0] signal_line,  // Signal Line (EMA of MACD Line)
+    output reg [DW-1:0] histogram,    // Histogram (MACD Line - Signal Line)
+    output reg done
+);
+    // Internal signals
+    wire [DW-1:0] fast_ema;
+    wire [DW-1:0] slow_ema;
+    wire fast_done, slow_done, signal_done;
+    reg macd_valid = 0;
+    reg [DW-1:0] macd_value;
+    
+    // Fast EMA calculator
+    ema_calculator #(
+        .PERIOD(FAST_PERIOD),
+        .DW(DW)
+    ) fast_ema_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_data(new_data),
+        .price(price),
+        .ema(fast_ema),
+        .done(fast_done)
+    );
+    
+    // Slow EMA calculator
+    ema_calculator #(
+        .PERIOD(SLOW_PERIOD),
+        .DW(DW)
+    ) slow_ema_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_data(new_data),
+        .price(price),
+        .ema(slow_ema),
+        .done(slow_done)
+    );
+    
+    // MACD Line calculation
+    always @(posedge clk) begin
+        if (fast_done && slow_done) begin
+            macd_value <= (fast_ema > slow_ema) ? 
+                          (fast_ema - slow_ema) : 0;
+            macd_valid <= 1;
+        end else begin
+            macd_valid <= 0;
+        end
+    end
+    
+    // Signal Line calculator (EMA of MACD Line)
+    ema_calculator #(
+        .PERIOD(SIGNAL_PERIOD),
+        .DW(DW)
+    ) signal_ema_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_data(macd_valid),
+        .price(macd_value),
+        .ema(signal_line),
+        .done(signal_done)
+    );
+    
+    // Final MACD outputs
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            macd_line <= 0;
+            histogram <= 0;
+            done <= 0;
+        end else if (signal_done) begin
+            macd_line <= macd_value;
+            histogram <= (macd_value > signal_line) ? 
+                        (macd_value - signal_line) : 
+                        (signal_line - macd_value);
+            done <= 1;
+        end else begin
+            done <= 0;
+        end
+    end
+endmodule
+```
+
+Key implementation features:
+- Multiple EMA components
+- Cascaded calculation approach
+- Component interconnection
+- Signal validity tracking
+- Complete indicator output
+
+The MACD indicator is useful for:
+- Trend direction identification
+- Momentum assessment
+- Signal crossover strategies
+- Divergence detection
+- Entry and exit timing
+
+This modular implementation reuses the EMA component for efficient design.
+
+#### Stochastic Oscillator
+
+The Stochastic Oscillator compares current price to high/low range:
+
+```verilog
+module stochastic_oscillator #(
+    parameter K_PERIOD = 14,
+    parameter D_PERIOD = 3,
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] high,
+    input wire [DW-1:0] low,
+    output reg [7:0] k_percent,  // %K: Current value (0-100)
+    output reg [7:0] d_percent,  // %D: 3-period SMA of %K (0-100)
+    output reg done
+);
+    // Internal storage
+    reg [DW-1:0] highs [K_PERIOD-1:0];
+    reg [DW-1:0] lows [K_PERIOD-1:0];
+    reg [7:0] k_values [D_PERIOD-1:0];
+    reg [7:0] count = 0;
+    reg [7:0] d_count = 0;
+    
+    // Calculation variables
+    reg [DW-1:0] highest_high;
+    reg [DW-1:0] lowest_low;
+    reg [31:0] k_sum = 0;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, COLLECT = 1, FIND_HL = 2, CALC_K = 3, 
+               CALC_D = 4, COMPLETE = 5;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset logic
+            state <= IDLE;
+            count <= 0;
+            d_count <= 0;
+            k_sum <= 0;
+            done <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        // Shift data in price arrays
+                        for (int i = K_PERIOD-1; i > 0; i = i - 1) begin
+                            highs[i] <= highs[i-1];
+                            lows[i] <= lows[i-1];
+                        end
+                        highs[0] <= high;
+                        lows[0] <= low;
+                        
+                        count <= (count < K_PERIOD) ? count + 1 : K_PERIOD;
+                        state <= COLLECT;
+                    end
+                end
+                
+                COLLECT: begin
+                    if (count == K_PERIOD) begin
+                        state <= FIND_HL;
+                        // Initialize with first values
+                        highest_high <= highs[0];
+                        lowest_low <= lows[0];
+                    end else begin
+                        state <= IDLE;
+                    end
+                end
+                
+                FIND_HL: begin
+                    // Find highest high and lowest low
+                    for (int i = 1; i < K_PERIOD; i = i + 1) begin
+                        if (highs[i] > highest_high)
+                            highest_high <= highs[i];
+                        if (lows[i] < lowest_low)
+                            lowest_low <= lows[i];
+                    end
+                    state <= CALC_K;
+                end
+                
+                CALC_K: begin
+                    // Calculate %K: 100 * (close - lowest) / (highest - lowest)
+                    if (highest_high > lowest_low) begin
+                        k_percent <= (100 * (price - lowest_low)) / 
+                                    (highest_high - lowest_low);
+                    end else begin
+                        k_percent <= 50; // Default if range is zero
+                    end
+                    
+                    // Shift K values for %D calculation
+                    for (int i = D_PERIOD-1; i > 0; i = i - 1) begin
+                        k_values[i] <= k_values[i-1];
+                    end
+                    k_values[0] <= k_percent;
+                    
+                    d_count <= (d_count < D_PERIOD) ? d_count + 1 : D_PERIOD;
+                    state <= CALC_D;
+                end
+                
+                CALC_D: begin
+                    // Calculate %D (simple moving average of %K)
+                    if (d_count == D_PERIOD) begin
+                        k_sum <= 0;
+                        for (int i = 0; i < D_PERIOD; i = i + 1) begin
+                            k_sum <= k_sum + k_values[i];
+                        end
+                        d_percent <= k_sum / D_PERIOD;
+                    end else begin
+                        d_percent <= k_percent; // Default if not enough data
+                    end
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key implementation features:
+- Sliding window for high/low tracking
+- Multi-stage calculation process
+- Percentage-based output values
+- %K and %D line calculation
+- Complete state machine implementation
+
+The Stochastic Oscillator is useful for:
+- Overbought/oversold conditions
+- Price momentum analysis
+- Reversal identification
+- Divergence detection
+- Range-bound market strategies
+
+This implementation offers a comprehensive solution for stochastic calculation.
+
+#### Volume Indicators
+
+Volume-based indicators provide additional market insight:
+
+```verilog
+module volume_indicators #(
+    parameter PERIOD = 20,
+    parameter DW = 16,
+    parameter VOL_DW = 32  // Volume typically larger than price
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [VOL_DW-1:0] volume,
+    output reg [VOL_DW-1:0] volume_ma,  // Volume moving average
+    output reg [31:0] pvi,              // Positive Volume Index
+    output reg [31:0] nvi,              // Negative Volume Index
+    output reg [31:0] obv,              // On-Balance Volume
+    output reg done
+);
+    // Internal signals
+    reg [VOL_DW-1:0] vol_sum = 0;
+    reg [VOL_DW-1:0] vol_history [PERIOD-1:0];
+    reg [DW-1:0] prev_price = 0;
+    reg [VOL_DW-1:0] prev_volume = 0;
+    reg [7:0] count = 0;
+    reg initialized = 0;
+    
+    // OBV starting value
+    localparam OBV_START = 32'd1000;
+    
+    // PVI/NVI calculation variables
+    reg [31:0] pvi_internal = 32'd1000;  // Starting values
+    reg [31:0] nvi_internal = 32'd1000;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, INIT = 1, CALCULATE = 2, UPDATE = 3, COMPLETE = 4;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset logic
+            state <= IDLE;
+            vol_sum <= 0;
+            count <= 0;
+            initialized <= 0;
+            obv <= OBV_START;
+            pvi_internal <= 32'd1000;
+            nvi_internal <= 32'd1000;
+            done <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        // Shift volume history
+                        for (int i = PERIOD-1; i > 0; i = i - 1) begin
+                            vol_history[i] <= vol_history[i-1];
+                        end
+                        vol_history[0] <= volume;
+                        
+                        if (!initialized) begin
+                            state <= INIT;
+                        end else begin
+                            state <= CALCULATE;
+                        end
+                    end
+                end
+                
+                INIT: begin
+                    // Initialize values
+                    prev_price <= price;
+                    prev_volume <= volume;
+                    initialized <= 1;
+                    count <= 1;
+                    vol_sum <= volume;
+                    state <= COMPLETE;
+                end
+                
+                CALCULATE: begin
+                    // Calculate volume indicators
+                    
+                    // Update OBV
+                    if (price > prev_price)
+                        obv <= obv + volume;
+                    else if (price < prev_price)
+                        obv <= obv - volume;
+                    // else: OBV unchanged if price unchanged
+                    
+                    // Update PVI & NVI
+                    if (volume > prev_volume) begin
+                        // PVI update, NVI unchanged
+                        pvi_internal <= pvi_internal * (32'd1000 + 
+                                      ((price - prev_price) * 32'd1000 / prev_price)) / 32'd1000;
+                    end else begin
+                        // NVI update, PVI unchanged
+                        nvi_internal <= nvi_internal * (32'd1000 + 
+                                      ((price - prev_price) * 32'd1000 / prev_price)) / 32'd1000;
+                    end
+                    
+                    state <= UPDATE;
+                end
+                
+                UPDATE: begin
+                    // Update volume MA
+                    if (count < PERIOD) begin
+                        count <= count + 1;
+                        vol_sum <= vol_sum + volume;
+                    end else begin
+                        vol_sum <= vol_sum + volume - vol_history[PERIOD-1];
+                    end
+                    
+                    // Update previous values
+                    prev_price <= price;
+                    prev_volume <= volume;
+                    
+                    // Calculate volume moving average
+                    volume_ma <= vol_sum / count;
+                    
+                    // Set indices
+                    pvi <= pvi_internal;
+                    nvi <= nvi_internal;
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key implementation features:
+- Multiple volume indicator calculation
+- On-Balance Volume (OBV) tracking
+- Positive/Negative Volume Index calculation
+- Volume moving average
+- Efficient state machine implementation
+
+Volume indicators provide:
+- Volume trend analysis
+- Price/volume relationship assessment
+- Potential divergence identification
+- Market strength measurement
+- Trade confirmation signals
+
+These indicators enhance the trading system with volume-based insights.
+
+#### Custom Indicator Framework
+
+A flexible framework for custom indicator development:
+
+```verilog
+module custom_indicator_framework #(
+    parameter PERIOD = 20,
+    parameter DW = 16,
+    parameter INDICATOR_COUNT = 4,
+    parameter FUNCTION_SELECT = 0  // 0=SMA, 1=EMA, 2=RSI, 3=Custom
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] oldest_price,
+    input wire [7:0] config_data,  // Custom configuration
+    output reg [31:0] indicator_value,
+    output reg done
+);
+    // Internal signals for different indicators
+    wire [31:0] sma_value;
+    wire [31:0] ema_value;
+    wire [7:0] rsi_value;
+    wire [31:0] custom_value;
+    wire sma_done, ema_done, rsi_done, custom_done;
+    
+    // SMA calculation
+    moving_average_fsm #(
+        .WINDOW(PERIOD),
+        .DW(DW)
+    ) sma_calc (
+        .clk(clk),
+        .rst(rst),
+        .start(new_data),
+        .new_price(price),
+        .oldest_price(oldest_price),
+        .moving_avg(sma_value),
+        .done(sma_done)
+    );
+    
+    // EMA calculation
+    ema_calculator #(
+        .PERIOD(PERIOD),
+        .DW(DW)
+    ) ema_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_data(new_data),
+        .price(price),
+        .ema(ema_value),
+        .done(ema_done)
+    );
+    
+    // RSI calculation
+    rsi_inc #(
+        .WINDOW(PERIOD),
+        .DW(DW)
+    ) rsi_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_price_strobe(new_data),
+        .new_price(price),
+        .oldest_price(oldest_price),
+        .mem_full(1'b1),  // Assume memory is managed externally
+        .mem_count(8'h14),
+        .rsi(rsi_value),
+        .done(rsi_done)
+    );
+    
+    // Custom calculation (placeholder)
+    custom_calculation #(
+        .PERIOD(PERIOD),
+        .DW(DW),
+        .CONFIG(config_data)
+    ) custom_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_data(new_data),
+        .price(price),
+        .oldest_price(oldest_price),
+        .result(custom_value),
+        .done(custom_done)
+    );
+    
+    // Indicator selection multiplexer
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            indicator_value <= 0;
+            done <= 0;
+        end else begin
+            case (FUNCTION_SELECT)
+                0: begin  // SMA
+                    indicator_value <= sma_value;
+                    done <= sma_done;
+                end
+                1: begin  // EMA
+                    indicator_value <= ema_value;
+                    done <= ema_done;
+                end
+                2: begin  // RSI
+                    indicator_value <= {24'd0, rsi_value};  // Extend to 32 bits
+                    done <= rsi_done;
+                end
+                3: begin  // Custom
+                    indicator_value <= custom_value;
+                    done <= custom_done;
+                end
+                default: begin
+                    indicator_value <= sma_value;  // Default to SMA
+                    done <= sma_done;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key framework features:
+- Multiple indicator implementation
+- Selectable indicator function
+- Common interface
+- Parameterized configuration
+- Expandable architecture
+
+A custom indicator framework enables:
+- Rapid prototyping of new indicators
+- Consistent interface across indicators
+- Simplified system integration
+- Reuse of common components
+- Efficient experimentation
+
+This extensible approach supports continued development of trading strategies.
+
+### Multiple Timeframes
+
+#### Timeframe Management Architecture
+
+A multiple timeframe system enables analysis across different time scales:
+
+```verilog
+module multi_timeframe_system #(
+    parameter DW = 16,
+    parameter TF_COUNT = 3  // Number of timeframes
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Market data input
+    input wire new_data,
+    input wire [DW-1:0] price,
+    
+    // Timeframe configuration
+    input wire [7:0] tf_periods [TF_COUNT-1:0],  // Downsampling periods
+    
+    // Indicator outputs
+    output wire [31:0] ma_values [TF_COUNT-1:0],
+    output wire [7:0] rsi_values [TF_COUNT-1:0],
+    
+    // Signal outputs
+    output wire buy_signals [TF_COUNT-1:0],
+    output wire sell_signals [TF_COUNT-1:0],
+    
+    // Status outputs
+    output wire systems_ready [TF_COUNT-1:0]
+);
+    // Timeframe generation signals
+    reg [7:0] counters [TF_COUNT-1:0];
+    reg tf_triggers [TF_COUNT-1:0];
+    reg [DW-1:0] tf_prices [TF_COUNT-1:0];
+    
+    // Timeframe counters and triggers
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            for (int i = 0; i < TF_COUNT; i = i + 1) begin
+                counters[i] <= 0;
+                tf_triggers[i] <= 0;
+                tf_prices[i] <= 0;
+            end
+        end else if (new_data) begin
+            // Always process first timeframe (original data)
+            tf_triggers[0] <= 1;
+            tf_prices[0] <= price;
+            
+            // Process higher timeframes with downsampling
+            for (int i = 1; i < TF_COUNT; i = i + 1) begin
+                if (counters[i] >= tf_periods[i] - 1) begin
+                    // Trigger this timeframe
+                    counters[i] <= 0;
+                    tf_triggers[i] <= 1;
+                    tf_prices[i] <= price;
+                end else begin
+                    counters[i] <= counters[i] + 1;
+                    tf_triggers[i] <= 0;
+                end
+            end
+        end else begin
+            // Clear triggers after one cycle
+            for (int i = 0; i < TF_COUNT; i = i + 1) begin
+                tf_triggers[i] <= 0;
+            end
+        end
+    end
+    
+    // Generate trading systems for each timeframe
+    genvar i;
+    generate
+        for (i = 0; i < TF_COUNT; i = i + 1) begin: tf_systems
+            trading_system_singlemem tf_system (
+                .clk(clk),
+                .rst(rst),
+                .price_in(tf_prices[i]),
+                .new_price(tf_triggers[i]),
+                .moving_avg(ma_values[i]),
+                .rsi(rsi_values[i]),
+                .buy(buy_signals[i]),
+                .sell(sell_signals[i]),
+                .mem_full(systems_ready[i])
+            );
+        end
+    endgenerate
+endmodule
+```
+
+Key architecture features:
+- Configurable multiple timeframe support
+- Downsampling for higher timeframes
+- Parallel indicator calculation
+- Independent signal generation
+- Scalable implementation
+
+The multi-timeframe approach enables:
+- Cross-timeframe analysis
+- Trend confirmation across scales
+- Nested trading strategies
+- Hierarchical market analysis
+- Comprehensive market view
+
+This architecture provides a foundation for sophisticated trading strategies.
+
+#### Multi-Timeframe Data Organization
+
+A robust data organization strategy is essential for multi-timeframe systems:
+
+```verilog
+module timeframe_data_manager #(
+    parameter DW = 16,
+    parameter TF_COUNT = 3,
+    parameter MAX_TF_PERIOD = 60  // Maximum timeframe period
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Market data input
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] high,
+    input wire [DW-1:0] low,
+    input wire [31:0] volume,
+    
+    // Timeframe configuration
+    input wire [7:0] tf_periods [TF_COUNT-1:0],
+    
+    // Timeframe data outputs
+    output reg tf_data_valid [TF_COUNT-1:0],
+    output reg [DW-1:0] tf_price [TF_COUNT-1:0],
+    output reg [DW-1:0] tf_high [TF_COUNT-1:0],
+    output reg [DW-1:0] tf_low [TF_COUNT-1:0],
+    output reg [31:0] tf_volume [TF_COUNT-1:0]
+);
+    // Timeframe accumulators
+    reg [7:0] bar_counters [TF_COUNT-1:0];
+    reg [DW-1:0] bar_high [TF_COUNT-1:0];
+    reg [DW-1:0] bar_low [TF_COUNT-1:0];
+    reg [DW-1:0] bar_open [TF_COUNT-1:0];
+    reg [31:0] bar_volume [TF_COUNT-1:0];
+    reg bar_initialized [TF_COUNT-1:0];
+    
+    // Timeframe management
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset all counters and accumulators
+            for (int i = 0; i < TF_COUNT; i = i + 1) begin
+                bar_counters[i] <= 0;
+                bar_high[i] <= 0;
+                bar_low[i] <= 0;
+                bar_open[i] <= 0;
+                bar_volume[i] <= 0;
+                bar_initialized[i] <= 0;
+                tf_data_valid[i] <= 0;
+            end
+        end else if (new_data) begin
+            // Process first timeframe directly (raw data)
+            tf_data_valid[0] <= 1;
+            tf_price[0] <= price;
+            tf_high[0] <= high;
+            tf_low[0] <= low;
+            tf_volume[0] <= volume;
+            
+            // Process higher timeframes
+            for (int i = 1; i < TF_COUNT; i = i + 1) begin
+                // Default: not valid
+                tf_data_valid[i] <= 0;
+                
+                // Initialize bar data if needed
+                if (!bar_initialized[i]) begin
+                    bar_open[i] <= price;
+                    bar_high[i] <= high;
+                    bar_low[i] <= low;
+                    bar_volume[i] <= volume;
+                    bar_initialized[i] <= 1;
+                    bar_counters[i] <= 1;
+                end else begin
+                    // Update high/low/volume
+                    bar_high[i] <= (high > bar_high[i]) ? high : bar_high[i];
+                    bar_low[i] <= (low < bar_low[i]) ? low : bar_low[i];
+                    bar_volume[i] <= bar_volume[i] + volume;
+                    
+                    // Check if timeframe is complete
+                    if (bar_counters[i] >= tf_periods[i] - 1) begin
+                        // Complete bar, output data
+                        tf_data_valid[i] <= 1;
+                        tf_price[i] <= price;  // Close price
+                        tf_high[i] <= bar_high[i];
+                        tf_low[i] <= bar_low[i];
+                        tf_volume[i] <= bar_volume[i];
+                        
+                        // Reset for next bar
+                        bar_counters[i] <= 0;
+                        bar_initialized[i] <= 0;
+                    end else begin
+                        // Increment counter
+                        bar_counters[i] <= bar_counters[i] + 1;
+                    end
+                end
+            end
+        end else begin
+            // Clear valid signals after one cycle
+            for (int i = 0; i < TF_COUNT; i = i + 1) begin
+                tf_data_valid[i] <= 0;
+            end
+        end
+    end
+endmodule
+```
+
+Key features of this data organization:
+- OHLC (Open, High, Low, Close) bar construction
+- Volume aggregation across timeframes
+- Proper bar boundary handling
+- Synchronized data output
+- Configurable timeframe periods
+
+This approach enables:
+- Comprehensive market data analysis
+- Precise timeframe boundary management
+- Complete market information across scales
+- Consistent data organization
+- Support for various indicator types
+
+The implementation efficiently manages data for multi-timeframe analysis.
+
+#### Downsampling Implementation
+
+Effective downsampling is critical for multi-timeframe systems:
+
+```verilog
+module price_downsampler #(
+    parameter DW = 16,
+    parameter SAMPLE_PERIOD = 5,  // Downsampling ratio
+    parameter METHOD = 0           // 0=Close, 1=OHLC, 2=VWAP
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Input data stream
+    input wire data_valid,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] high,
+    input wire [DW-1:0] low,
+    input wire [31:0] volume,
+    
+    // Output data stream
+    output reg out_valid,
+    output reg [DW-1:0] out_price
+);
+    // Downsampling state
+    reg [7:0] counter = 0;
+    reg [DW-1:0] open_price = 0;
+    reg [DW-1:0] high_price = 0;
+    reg [DW-1:0] low_price = 0;
+    reg [63:0] volume_sum = 0;
+    reg [63:0] volume_price_sum = 0;
+    reg initialized = 0;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            counter <= 0;
+            out_valid <= 0;
+            out_price <= 0;
+            initialized <= 0;
+        end else if (data_valid) begin
+            if (!initialized) begin
+                // First data point in period
+                counter <= 1;
+                open_price <= price;
+                high_price <= high;
+                low_price <= low;
+                volume_sum <= volume;
+                volume_price_sum <= price * volume;
+                initialized <= 1;
+                out_valid <= 0;
+            end else begin
+                // Update accumulators
+                high_price <= (high > high_price) ? high : high_price;
+                low_price <= (low < low_price) ? low : low_price;
+                volume_sum <= volume_sum + volume;
+                volume_price_sum <= volume_price_sum + (price * volume);
+                
+                // Check if period is complete
+                if (counter >= SAMPLE_PERIOD - 1) begin
+                    // Output downsampled data based on method
+                    out_valid <= 1;
+                    
+                    case (METHOD)
+                        0: out_price <= price;  // Use closing price
+                        
+                        1: begin  // Use average of OHLC
+                            out_price <= (open_price + high_price + 
+                                        low_price + price) / 4;
+                        end
+                        
+                        2: begin  // Use Volume Weighted Average Price (VWAP)
+                            if (volume_sum > 0)
+                                out_price <= volume_price_sum / volume_sum;
+                            else
+                                out_price <= price;
+                        end
+                        
+                        default: out_price <= price;  // Default to close
+                    endcase
+                    
+                    // Reset for next period
+                    counter <= 0;
+                    initialized <= 0;
+                end else begin
+                    // Increment counter
+                    counter <= counter + 1;
+                    out_valid <= 0;
+                end
+            end
+        end else begin
+            out_valid <= 0;  // Clear valid signal after one cycle
+        end
+    end
+endmodule
+```
+
+Key downsampling features:
+- Multiple downsampling methods:
+  - Close price: Most common, uses last price
+  - OHLC average: Balanced representation
+  - VWAP: Volume-weighted average price
+- Proper period boundary management
+- Accumulator-based implementation
+- Clean output signaling
+- Configurable downsampling ratio
+
+This approach enables:
+- Flexible timeframe creation
+- Method-specific downsampling
+- Accurate representation of higher timeframes
+- Efficient data reduction
+- Support for various analysis techniques
+
+Proper downsampling creates meaningful higher timeframe data.
+
+#### Signal Combination Strategy
+
+Combining signals across timeframes enhances strategy robustness:
+
+```verilog
+module timeframe_signal_combiner #(
+    parameter TF_COUNT = 3,
+    parameter STRATEGY = 0  // 0=Consensus, 1=Hierarchical, 2=Weighted
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Signals from different timeframes
+    input wire [TF_COUNT-1:0] buy_signals,
+    input wire [TF_COUNT-1:0] sell_signals,
+    input wire [TF_COUNT-1:0] systems_ready,
+    
+    // Optional signal strength/confidence (0-100)
+    input wire [7:0] signal_strength [TF_COUNT-1:0],
+    
+    // Combined output signals
+    output reg buy,
+    output reg sell,
+    output reg [7:0] confidence
+);
+    // Signal counts and strengths
+    reg [3:0] buy_count = 0;
+    reg [3:0] sell_count = 0;
+    reg [15:0] buy_strength_sum = 0;
+    reg [15:0] sell_strength_sum = 0;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            buy <= 0;
+            sell <= 0;
+            confidence <= 0;
+        end else begin
+            // Count active signals and sum strengths
+            buy_count = 0;
+            sell_count = 0;
+            buy_strength_sum = 0;
+            sell_strength_sum = 0;
+            
+            for (int i = 0; i < TF_COUNT; i = i + 1) begin
+                if (systems_ready[i]) begin
+                    if (buy_signals[i]) begin
+                        buy_count = buy_count + 1;
+                        buy_strength_sum = buy_strength_sum + signal_strength[i];
+                    end
+                    
+                    if (sell_signals[i]) begin
+                        sell_count = sell_count + 1;
+                        sell_strength_sum = sell_strength_sum + signal_strength[i];
+                    end
+                end
+            end
+            
+            // Apply combination strategy
+            case (STRATEGY)
+                0: begin  // Consensus strategy - majority rule
+                    // Require majority of ready systems to agree
+                    reg [3:0] ready_count = 0;
+                    for (int i = 0; i < TF_COUNT; i = i + 1) begin
+                        if (systems_ready[i])
+                            ready_count = ready_count + 1;
+                    end
+                    
+                    reg [3:0] majority = (ready_count / 2) + 1;
+                    
+                    buy <= (buy_count >= majority);
+                    sell <= (sell_count >= majority);
+                    
+                    // Calculate confidence (0-100)
+                    if (buy_count >= majority)
+                        confidence <= (buy_count * 100) / ready_count;
+                    else if (sell_count >= majority)
+                        confidence <= (sell_count * 100) / ready_count;
+                    else
+                        confidence <= 0;
+                end
+                
+                1: begin  // Hierarchical strategy - higher TFs override lower
+                    // Start with lowest timeframe
+                    buy <= buy_signals[0];
+                    sell <= sell_signals[0];
+                    
+                    // Override with higher timeframes if contradicting
+                    for (int i = 1; i < TF_COUNT; i = i + 1) begin
+                        if (systems_ready[i]) begin
+                            if (buy_signals[i] && sell_signals[i-1])
+                                sell <= 0;  // Higher timeframe buy overrides lower TF sell
+                            
+                            if (sell_signals[i] && buy_signals[i-1])
+                                buy <= 0;   // Higher timeframe sell overrides lower TF buy
+                        end
+                    end
+                    
+                    // Confidence based on highest agreeing timeframe
+                    confidence <= 0;
+                    for (int i = TF_COUNT-1; i >= 0; i = i - 1) begin
+                        if (systems_ready[i] && 
+                           (buy_signals[i] || sell_signals[i])) begin
+                            confidence <= 50 + ((i * 50) / (TF_COUNT - 1));
+                            break;
+                        end
+                    end
+                end
+                
+                2: begin  // Weighted strategy - based on signal strength
+                    // Compare total signal strength
+                    if (buy_strength_sum > sell_strength_sum) begin
+                        buy <= 1;
+                        sell <= 0;
+                        confidence <= (buy_strength_sum * 100) / 
+                                     (buy_strength_sum + sell_strength_sum);
+                    end else if (sell_strength_sum > buy_strength_sum) begin
+                        buy <= 0;
+                        sell <= 1;
+                        confidence <= (sell_strength_sum * 100) / 
+                                     (buy_strength_sum + sell_strength_sum);
+                    end else begin
+                        buy <= 0;
+                        sell <= 0;
+                        confidence <= 0;
+                    end
+                end
+                
+                default: begin  // Default to consensus
+                    buy <= (buy_count > sell_count);
+                    sell <= (sell_count > buy_count);
+                    confidence <= 50;  // Neutral confidence
+                end
+            endcase
+            
+            // Never allow both buy and sell
+            if (buy && sell) begin
+                if (buy_strength_sum >= sell_strength_sum) begin
+                    sell <= 0;
+                end else begin
+                    buy <= 0;
+                end
+            end
+        end
+    end
+endmodule
+```
+
+Key signal combination features:
+- Multiple combination strategies:
+  - Consensus: Majority of timeframes agree
+  - Hierarchical: Higher timeframes override lower
+  - Weighted: Signal strength determines outcome
+- Signal confidence calculation
+- Conflict resolution
+- System readiness tracking
+- Flexible strategy selection
+
+This approach enables:
+- Robust cross-timeframe analysis
+- Reduced false signals
+- Increased trading confidence
+- Strategy customization
+- Comprehensive market perspective
+
+Effective signal combination improves trading strategy reliability.
+
+#### Resource Sharing Approach
+
+Optimizing resource usage in multi-timeframe systems:
+
+```verilog
+module shared_resource_timeframe_system #(
+    parameter DW = 16,
+    parameter TF_COUNT = 3
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Market data input
+    input wire new_data,
+    input wire [DW-1:0] price,
+    
+    // Timeframe configuration
+    input wire [7:0] tf_periods [TF_COUNT-1:0],
+    
+    // Output signals
+    output reg [31:0] ma_values [TF_COUNT-1:0],
+    output reg [7:0] rsi_values [TF_COUNT-1:0],
+    output reg buy_signals [TF_COUNT-1:0],
+    output reg sell_signals [TF_COUNT-1:0]
+);
+    // Shared calculation resources
+    reg [DW-1:0] calc_price = 0;
+    reg [DW-1:0] calc_oldest_price = 0;
+    reg calc_trigger = 0;
+    wire [31:0] calc_ma;
+    wire [7:0] calc_rsi;
+    wire calc_done;
+    
+    // Timeframe memory
+    reg [DW-1:0] price_history [TF_COUNT-1:0][63:0];  // Up to 64 prices per TF
+    reg [5:0] write_ptrs [TF_COUNT-1:0];
+    reg [5:0] read_ptrs [TF_COUNT-1:0];
+    reg [6:0] item_counts [TF_COUNT-1:0];
+    
+    // Timeframe control
+    reg [7:0] tf_counters [TF_COUNT-1:0];
+    reg [2:0] current_tf = 0;
+    reg [2:0] calc_state = 0;
+    
+    // Configuration for shared calculator
+    reg [7:0] calc_window = 20;
+    
+    // State machine states
+    localparam IDLE = 0, STORE_DATA = 1, PREPARE_CALC = 2, 
+               CALCULATE = 3, STORE_RESULT = 4;
+    
+    // Shared calculator instance
+    shared_indicator_calculator calculator (
+        .clk(clk),
+        .rst(rst),
+        .start(calc_trigger),
+        .window_size(calc_window),
+        .price(calc_price),
+        .oldest_price(calc_oldest_price),
+        .moving_avg(calc_ma),
+        .rsi(calc_rsi),
+        .done(calc_done)
+    );
+    
+    // Main control logic
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset all counters and pointers
+            for (int i = 0; i < TF_COUNT; i = i + 1) begin
+                tf_counters[i] <= 0;
+                write_ptrs[i] <= 0;
+                read_ptrs[i] <= 0;
+                item_counts[i] <= 0;
+            end
+            
+            current_tf <= 0;
+            calc_state <= IDLE;
+            calc_trigger <= 0;
+        end else begin
+            // Default: no calculation trigger
+            calc_trigger <= 0;
+            
+            case (calc_state)
+                IDLE: begin
+                    if (new_data) begin
+                        calc_state <= STORE_DATA;
+                        current_tf <= 0;
+                    end
+                end
+                
+                STORE_DATA: begin
+                    // Check if this timeframe should process data
+                    if (current_tf == 0 || 
+                        tf_counters[current_tf] >= tf_periods[current_tf] - 1) begin
+                        
+                        // Reset counter if needed
+                        if (current_tf > 0 && 
+                            tf_counters[current_tf] >= tf_periods[current_tf] - 1) begin
+                            tf_counters[current_tf] <= 0;
+                        end else if (current_tf > 0) begin
+                            tf_counters[current_tf] <= tf_counters[current_tf] + 1;
+                        end
+                        
+                        // Store price in circular buffer
+                        price_history[current_tf][write_ptrs[current_tf]] <= price;
+                        
+                        // Update write pointer
+                        write_ptrs[current_tf] <= (write_ptrs[current_tf] + 1) % 64;
+                        
+                        // Update item count
+                        if (item_counts[current_tf] < 64)
+                            item_counts[current_tf] <= item_counts[current_tf] + 1;
+                        else
+                            // Also update read pointer if buffer is full
+                            read_ptrs[current_tf] <= (read_ptrs[current_tf] + 1) % 64;
+                        
+                        // Move to calculation if ready
+                        if (item_counts[current_tf] >= 14) begin
+                            calc_state <= PREPARE_CALC;
+                        end else begin
+                            // Move to next timeframe
+                            if (current_tf < TF_COUNT - 1) begin
+                                current_tf <= current_tf + 1;
+                            end else begin
+                                calc_state <= IDLE;
+                            end
+                        end
+                    end else begin
+                        // Increment counter for this timeframe
+                        tf_counters[current_tf] <= tf_counters[current_tf] + 1;
+                        
+                        // Move to next timeframe
+                        if (current_tf < TF_COUNT - 1) begin
+                            current_tf <= current_tf + 1;
+                        end else begin
+                            calc_state <= IDLE;
+                        end
+                    end
+                end
+                
+                PREPARE_CALC: begin
+                    // Set up calculation parameters
+                    calc_price <= price;
+                    calc_oldest_price <= price_history[current_tf][read_ptrs[current_tf]];
+                    calc_window <= (current_tf == 0) ? 20 : 14;  // Example window sizes
+                    
+                    // Trigger calculation
+                    calc_trigger <= 1;
+                    calc_state <= CALCULATE;
+                end
+                
+                CALCULATE: begin
+                    // Wait for calculation to complete
+                    if (calc_done) begin
+                        calc_state <= STORE_RESULT;
+                    end
+                end
+                
+                STORE_RESULT: begin
+                    // Store results for this timeframe
+                    ma_values[current_tf] <= calc_ma;
+                    rsi_values[current_tf] <= calc_rsi;
+                    
+                    // Generate signals (simple example)
+                    buy_signals[current_tf] <= (price > calc_ma) && (calc_rsi < 30);
+                    sell_signals[current_tf] <= (price < calc_ma) && (calc_rsi > 70);
+                    
+                    // Move to next timeframe
+                    if (current_tf < TF_COUNT - 1) begin
+                        current_tf <= current_tf + 1;
+                        calc_state <= PREPARE_CALC;
+                    end else begin
+                        calc_state <= IDLE;
+                    end
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key resource sharing features:
+- Single calculation engine shared across timeframes
+- Time-multiplexed operation
+- Separate memory for each timeframe
+- Sequential processing of timeframes
+- Configurable calculation parameters
+
+This approach enables:
+- Reduced resource utilization
+- Simplified hardware implementation
+- Flexible timeframe configuration
+- Efficient resource allocation
+- Scalable multi-timeframe support
+
+Resource sharing offers a balance between functionality and efficiency.
+
+#### System Scalability Considerations
+
+Designing scalable multi-timeframe systems requires careful consideration:
+
+1. **Resource Scaling Analysis**
+   - **Linear Scaling Approach**:
+     - Independent systems for each timeframe
+     - Resource usage scales linearly with timeframe count
+     - Provides maximum performance and parallelism
+     - Higher resource requirements
+     - Simplest implementation
+     - 
+   - **Shared Resource Approach**:
+     - Common calculation engine
+     - Time-multiplexed operation
+     - Reduced resource usage
+     - Sequential processing with increased latency
+     - More complex control logic
+
+   - **Hybrid Approach**:
+     - Critical components duplicated
+     - Shared secondary resources
+     - Balanced performance and resource usage
+     - Selective parallelism
+     - Optimized for specific application needs
+
+2. **Timeframe Count Scaling**
+   - **Performance Impact**:
+     - Linear increase in calculation time for shared resources
+     - Memory requirements scale directly with timeframe count
+     - Control complexity increases with timeframe count
+     - Signal combination logic grows quadratically
+     - System latency affected by processing approach
+
+   - **Resource Utilization Impact**:
+     - Independent systems: Linear scaling of all resources
+     - Shared calculation: Linear scaling of memory only
+     - Memory requirements dominant in high timeframe count
+     - DSP usage critical for calculation-heavy designs
+     - Control logic overhead increases with timeframe count
+
+3. **Implementation Strategies**
+   - **Low Timeframe Count (2-3)**:
+     - Full parallelism practical
+     - Independent systems for each timeframe
+     - Direct signal combination
+     - Minimal control complexity
+     - Maximum performance achievable
+
+   - **Medium Timeframe Count (4-8)**:
+     - Hybrid approach recommended
+     - Parallel primary indicators
+     - Shared secondary indicators
+     - Hierarchical control structure
+     - Balanced performance and resources
+
+   - **High Timeframe Count (8+)**:
+     - Shared resource approach necessary
+     - Time-multiplexed calculation
+     - Optimized memory structure
+     - Priority-based processing
+     - Sequential operation with critical path optimization
+
+4. **Scalability Limits**
+   - **Memory Constraints**:
+     - BRAM capacity may limit history depth
+     - Consider external memory for highest timeframes
+     - Implement efficient compression for historical data
+     - Use sparse representation for higher timeframes
+     - Balance precision and storage requirements
+
+   - **Processing Constraints**:
+     - Time-multiplexing limits throughput
+     - Market data rate establishes minimum processing speed
+     - Critical path in calculation engine
+     - Complex signal combination logic
+     - Control state growth with timeframe count
+
+   - **Practical Limits**:
+     - 8-12 timeframes typical maximum for mid-range FPGAs
+     - Trade-off between timeframe count and indicator complexity
+     - Consider multiple FPGA solution for highest scale
+     - Hierarchical processing for extreme scalability
+     - Balance timeframe coverage with implementation complexity
+
+These scalability considerations enable the development of multi-timeframe systems tailored to specific trading requirements and hardware constraints.
+
+### Advanced Trading Strategies
+
+#### Moving Average Crossover Implementation
+
+A moving average crossover strategy identifies trend changes through MA interactions:
+
+```verilog
+module ma_crossover_strategy #(
+    parameter FAST_MA_PERIOD = 10,
+    parameter SLOW_MA_PERIOD = 50,
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] oldest_price_fast,
+    input wire [DW-1:0] oldest_price_slow,
+    output reg buy,
+    output reg sell,
+    output reg [31:0] fast_ma,
+    output reg [31:0] slow_ma,
+    output reg trend,  // 1 = uptrend, 0 = downtrend
+    output reg done
+);
+    // Internal signals
+    reg [63:0] fast_sum = 0;
+    reg [63:0] slow_sum = 0;
+    reg prev_cross_state = 0;  // 1 = fast above slow
+    reg cross_state = 0;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, CALCULATE = 1, DETECT_CROSS = 2, COMPLETE = 3;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            fast_sum <= 0;
+            slow_sum <= 0;
+            fast_ma <= 0;
+            slow_ma <= 0;
+            buy <= 0;
+            sell <= 0;
+            trend <= 0;
+            done <= 0;
+            state <= IDLE;
+            prev_cross_state <= 0;
+            cross_state <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        state <= CALCULATE;
+                        // Clear signals
+                        buy <= 0;
+                        sell <= 0;
+                        done <= 0;
+                    end
+                end
+                
+                CALCULATE: begin
+                    // Update fast MA
+                    fast_sum <= fast_sum + price - oldest_price_fast;
+                    fast_ma <= fast_sum / FAST_MA_PERIOD;
+                    
+                    // Update slow MA
+                    slow_sum <= slow_sum + price - oldest_price_slow;
+                    slow_ma <= slow_sum / SLOW_MA_PERIOD;
+                    
+                    state <= DETECT_CROSS;
+                end
+                
+                DETECT_CROSS: begin
+                    // Determine current crossover state
+                    prev_cross_state <= cross_state;
+                    cross_state <= (fast_ma >= slow_ma) ? 1'b1 : 1'b0;
+                    
+                    // Current trend direction
+                    trend <= cross_state;
+                    
+                    // Check for crossover
+                    if (cross_state != prev_cross_state) begin
+                        if (cross_state == 1'b1) begin
+                            // Fast crossed above slow = Buy signal
+                            buy <= 1'b1;
+                            sell <= 1'b0;
+                        end else begin
+                            // Fast crossed below slow = Sell signal
+                            buy <= 1'b0;
+                            sell <= 1'b1;
+                        end
+                    end else begin
+                        // No crossover
+                        buy <= 1'b0;
+                        sell <= 1'b0;
+                    end
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1'b1;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+endmodule
+```
+
+Key implementation features:
+- Dual moving average calculation
+- Crossover detection logic
+- Signal generation on MA crossovers
+- Trend direction tracking
+- Efficient state machine implementation
+
+This strategy offers:
+- Trend direction identification
+- Entry and exit signal generation
+- Reduced whipsaw in trending markets
+- Clear trend visualization
+- Foundation for more complex strategies
+
+Moving average crossovers provide reliable trend-following signals across various markets and timeframes.
+
+#### Multi-Indicator Strategies
+
+Complex strategies combining multiple indicators enhance trading effectiveness:
+
+```verilog
+module multi_indicator_strategy #(
+    parameter DW = 16,
+    parameter MA_PERIOD = 20,
+    parameter RSI_PERIOD = 14,
+    parameter RSI_OVERSOLD = 30,
+    parameter RSI_OVERBOUGHT = 70,
+    parameter BB_STDEV = 2     // Bollinger Band standard deviation multiplier
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] oldest_price,
+    output reg buy,
+    output reg sell,
+    output reg [3:0] signal_strength,  // 0-15 scale
+    output reg done
+);
+    // Indicator outputs
+    wire [31:0] ma_value;
+    wire [7:0] rsi_value;
+    wire [DW-1:0] bb_upper, bb_middle, bb_lower;
+    wire ma_done, rsi_done, bb_done;
+    
+    // Moving Average calculator
+    moving_average_fsm #(
+        .WINDOW(MA_PERIOD),
+        .DW(DW)
+    ) ma_calc (
+        .clk(clk),
+        .rst(rst),
+        .start(new_data),
+        .new_price(price),
+        .oldest_price(oldest_price),
+        .moving_avg(ma_value),
+        .done(ma_done)
+    );
+    
+    // RSI calculator
+    rsi_inc #(
+        .WINDOW(RSI_PERIOD),
+        .DW(DW)
+    ) rsi_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_price_strobe(new_data),
+        .new_price(price),
+        .oldest_price(oldest_price),
+        .mem_full(1'b1),
+        .mem_count(8'h14),
+        .rsi(rsi_value),
+        .done(rsi_done)
+    );
+    
+    // Bollinger Bands calculator
+    bollinger_bands #(
+        .PERIOD(MA_PERIOD),
+        .STDEV_MULT(BB_STDEV),
+        .DW(DW)
+    ) bb_calc (
+        .clk(clk),
+        .rst(rst),
+        .new_data(new_data),
+        .price(price),
+        .oldest_price(oldest_price),
+        .middle_band(bb_middle),
+        .upper_band(bb_upper),
+        .lower_band(bb_lower),
+        .done(bb_done)
+    );
+    
+    // Strategy state machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, WAIT_RESULTS = 1, EVALUATE = 2, SIGNAL = 3, COMPLETE = 4;
+    
+    // Signal contribution counters
+    reg [2:0] buy_count = 0;
+    reg [2:0] sell_count = 0;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            buy <= 0;
+            sell <= 0;
+            signal_strength <= 0;
+            done <= 0;
+            state <= IDLE;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        state <= WAIT_RESULTS;
+                        // Reset signals
+                        buy <= 0;
+                        sell <= 0;
+                        done <= 0;
+                    end
+                end
+                
+                WAIT_RESULTS: begin
+                    // Wait for all indicators to complete
+                    if (ma_done && rsi_done && bb_done) begin
+                        state <= EVALUATE;
+                    end
+                end
+                
+                EVALUATE: begin
+                    // Reset counters
+                    buy_count <= 0;
+                    sell_count <= 0;
+                    
+                    // Evaluate MA trend
+                    if (price > ma_value)
+                        buy_count <= buy_count + 1;
+                    else if (price < ma_value)
+                        sell_count <= sell_count + 1;
+                    
+                    // Evaluate RSI conditions
+                    if (rsi_value < RSI_OVERSOLD)
+                        buy_count <= buy_count + 1;
+                    else if (rsi_value > RSI_OVERBOUGHT)
+                        sell_count <= sell_count + 1;
+                    
+                    // Evaluate Bollinger Bands
+                    if (price < bb_lower)
+                        buy_count <= buy_count + 1;
+                    else if (price > bb_upper)
+                        sell_count <= sell_count + 1;
+                    
+                    state <= SIGNAL;
+                end
+                
+                SIGNAL: begin
+                    // Generate signals based on indicator agreement
+                    if (buy_count > sell_count && buy_count >= 2) begin
+                        buy <= 1;
+                        sell <= 0;
+                        signal_strength <= buy_count * 5;  // Scale 0-15
+                    end else if (sell_count > buy_count && sell_count >= 2) begin
+                        buy <= 0;
+                        sell <= 1;
+                        signal_strength <= sell_count * 5;  // Scale 0-15
+                    end else begin
+                        buy <= 0;
+                        sell <= 0;
+                        signal_strength <= 0;
+                    end
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+endmodule
+```
+
+Key multi-indicator features:
+- Integration of three complementary indicators
+- Weighted agreement system
+- Signal strength indication
+- Efficient parallel calculation
+- Comprehensive market perspective
+
+This approach provides:
+- Reduced false signals through confirmation
+- Multi-factor decision making
+- Balanced trend and momentum analysis
+- Adaptive market condition response
+- Enhanced signal quality
+
+Multi-indicator strategies create robust trading systems with improved risk management.
+
+#### Volatility-Based Position Sizing
+
+Adaptive position sizing based on market volatility enhances risk management:
+
+```verilog
+module volatility_position_sizing #(
+    parameter DW = 16,
+    parameter VOLATILITY_PERIOD = 20,
+    parameter BASE_POSITION = 100,    // Base position size (%)
+    parameter MAX_POSITION = 200,     // Maximum position size (%)
+    parameter MIN_POSITION = 25       // Minimum position size (%)
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] oldest_price,
+    input wire buy_signal,
+    input wire sell_signal,
+    output reg buy,
+    output reg sell,
+    output reg [7:0] position_size,   // Percentage of maximum position
+    output reg [15:0] volatility,     // Current volatility measure
+    output reg done
+);
+    // Internal signals
+    reg [DW-1:0] prices [VOLATILITY_PERIOD-1:0];
+    reg [31:0] avg_price;
+    reg [31:0] sum_deviation;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, STORE_PRICE = 1, CALC_AVG = 2, 
+               CALC_VOLATILITY = 3, SIZE_POSITION = 4, COMPLETE = 5;
+    
+    // Calculation variables
+    reg [31:0] price_sum;
+    reg [7:0] count;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset all registers
+            for (int i = 0; i < VOLATILITY_PERIOD; i = i + 1) begin
+                prices[i] <= 0;
+            end
+            avg_price <= 0;
+            sum_deviation <= 0;
+            volatility <= 0;
+            position_size <= BASE_POSITION;
+            buy <= 0;
+            sell <= 0;
+            done <= 0;
+            state <= IDLE;
+            price_sum <= 0;
+            count <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        state <= STORE_PRICE;
+                        // Clear signals
+                        buy <= 0;
+                        sell <= 0;
+                        done <= 0;
+                    end
+                end
+                
+                STORE_PRICE: begin
+                    // Shift prices and add new one
+                    for (int i = VOLATILITY_PERIOD-1; i > 0; i = i - 1) begin
+                        prices[i] <= prices[i-1];
+                    end
+                    prices[0] <= price;
+                    
+                    // Update counter
+                    if (count < VOLATILITY_PERIOD)
+                        count <= count + 1;
+                    
+                    state <= CALC_AVG;
+                end
+                
+                CALC_AVG: begin
+                    // Calculate average price
+                    price_sum <= 0;
+                    for (int i = 0; i < VOLATILITY_PERIOD; i = i + 1) begin
+                        if (i < count)
+                            price_sum <= price_sum + prices[i];
+                    end
+                    
+                    avg_price <= price_sum / count;
+                    state <= CALC_VOLATILITY;
+                end
+                
+                CALC_VOLATILITY: begin
+                    // Calculate average deviation (simplified volatility)
+                    sum_deviation <= 0;
+                    for (int i = 0; i < VOLATILITY_PERIOD; i = i + 1) begin
+                        if (i < count) begin
+                            if (prices[i] > avg_price)
+                                sum_deviation <= sum_deviation + (prices[i] - avg_price);
+                            else
+                                sum_deviation <= sum_deviation + (avg_price - prices[i]);
+                        end
+                    end
+                    
+                    // Calculate volatility as percentage of average price
+                    volatility <= (sum_deviation * 100) / (avg_price * count);
+                    
+                    state <= SIZE_POSITION;
+                end
+                
+                SIZE_POSITION: begin
+                    // Inverse relationship between volatility and position size
+                    if (volatility <= 5) begin
+                        // Low volatility - maximum position
+                        position_size <= MAX_POSITION;
+                    end else if (volatility >= 20) begin
+                        // High volatility - minimum position
+                        position_size <= MIN_POSITION;
+                    end else begin
+                        // Linear scale between min and max
+                        position_size <= MAX_POSITION - 
+                                        ((volatility - 5) * (MAX_POSITION - MIN_POSITION)) / 15;
+                    end
+                    
+                    // Pass through signals with position sizing
+                    buy <= buy_signal;
+                    sell <= sell_signal;
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+endmodule
+```
+
+Key position sizing features:
+- Average deviation volatility calculation
+- Inverse volatility-position relationship
+- Configurable position size limits
+- Signal pass-through with sizing
+- Adaptive risk management
+
+This approach enables:
+- Reduced exposure during high volatility
+- Increased position size in stable markets
+- Systematic risk management
+- Adaptive capital allocation
+- Enhanced risk-adjusted returns
+
+Volatility-based position sizing creates more robust trading systems with improved risk control.
+
+#### Custom Strategy Framework
+
+A flexible framework enables rapid development of custom strategies:
+
+```verilog
+module custom_strategy_framework #(
+    parameter DW = 16,
+    parameter INDICATOR_COUNT = 4,
+    parameter STRATEGY_ID = 0
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [31:0] indicator_values [INDICATOR_COUNT-1:0],
+    input wire indicators_ready [INDICATOR_COUNT-1:0],
+    input wire [7:0] param1,  // Custom strategy parameters
+    input wire [7:0] param2,
+    input wire [7:0] param3,
+    output reg buy,
+    output reg sell,
+    output reg [7:0] confidence,
+    output reg done
+);
+    // Strategy ID definitions
+    localparam TREND_FOLLOW = 0, MEAN_REVERSION = 1, 
+               BREAKOUT = 2, MULTI_TIMEFRAME = 3;
+    
+    // Strategy state
+    reg [2:0] state = 0;
+    localparam IDLE = 0, WAIT_INDICATORS = 1, EVALUATE = 2, SIGNAL = 3, COMPLETE = 4;
+    
+    // Internal signals
+    reg all_indicators_ready;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            buy <= 0;
+            sell <= 0;
+            confidence <= 0;
+            done <= 0;
+            state <= IDLE;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        state <= WAIT_INDICATORS;
+                        // Clear signals
+                        buy <= 0;
+                        sell <= 0;
+                        done <= 0;
+                    end
+                end
+                
+                WAIT_INDICATORS: begin
+                    // Check if all indicators are ready
+                    all_indicators_ready = 1;
+                    for (int i = 0; i < INDICATOR_COUNT; i = i + 1) begin
+                        if (!indicators_ready[i])
+                            all_indicators_ready = 0;
+                    end
+                    
+                    if (all_indicators_ready)
+                        state <= EVALUATE;
+                end
+                
+                EVALUATE: begin
+                    // Implement strategy-specific logic
+                    case (STRATEGY_ID)
+                        TREND_FOLLOW: begin
+                            // Trend following strategy
+                            // Assuming indicator_values[0] = MA, indicator_values[1] = RSI
+                            
+                            if (price > indicator_values[0] && indicator_values[1] > 50) begin
+                                // Uptrend with momentum
+                                buy <= 1;
+                                sell <= 0;
+                                confidence <= 70;
+                            end else if (price < indicator_values[0] && indicator_values[1] < 50) begin
+                                // Downtrend with momentum
+                                buy <= 0;
+                                sell <= 1;
+                                confidence <= 70;
+                            end else begin
+                                // No clear signal
+                                buy <= 0;
+                                sell <= 0;
+                                confidence <= 0;
+                            end
+                        end
+                        
+                        MEAN_REVERSION: begin
+                            // Mean reversion strategy
+                            // Assuming indicator_values[0] = MA, indicator_values[1] = RSI,
+                            // indicator_values[2] = BB_upper, indicator_values[3] = BB_lower
+                            
+                            if (indicator_values[1] < param1 && price < indicator_values[3]) begin
+                                // Oversold below lower band
+                                buy <= 1;
+                                sell <= 0;
+                                confidence <= 80;
+                            end else if (indicator_values[1] > param2 && price > indicator_values[2]) begin
+                                // Overbought above upper band
+                                buy <= 0;
+                                sell <= 1;
+                                confidence <= 80;
+                            end else begin
+                                // No clear signal
+                                buy <= 0;
+                                sell <= 0;
+                                confidence <= 0;
+                            end
+                        end
+                        
+                        BREAKOUT: begin
+                            // Breakout strategy
+                            // Assuming indicator_values[2] = highest_high, indicator_values[3] = lowest_low
+                            
+                            if (price > indicator_values[2] && price > indicator_values[0]) begin
+                                // Bullish breakout above resistance
+                                buy <= 1;
+                                sell <= 0;
+                                confidence <= 60;
+                            end else if (price < indicator_values[3] && price < indicator_values[0]) begin
+                                // Bearish breakout below support
+                                buy <= 0;
+                                sell <= 1;
+                                confidence <= 60;
+                            end else begin
+                                // No breakout
+                                buy <= 0;
+                                sell <= 0;
+                                confidence <= 0;
+                            end
+                        end
+                        
+                        MULTI_TIMEFRAME: begin
+                            // Multi-timeframe strategy
+                            // Assuming values from different timeframes
+                            
+                            if (indicator_values[0] > indicator_values[1] && 
+                                indicator_values[2] < param1) begin
+                                // Short-term MA above medium-term, RSI oversold
+                                buy <= 1;
+                                sell <= 0;
+                                confidence <= 65;
+                            end else if (indicator_values[0] < indicator_values[1] && 
+                                       indicator_values[2] > param2) begin
+                                // Short-term MA below medium-term, RSI overbought
+                                buy <= 0;
+                                sell <= 1;
+                                confidence <= 65;
+                            end else begin
+                                // No signal
+                                buy <= 0;
+                                sell <= 0;
+                                confidence <= 0;
+                            end
+                        end
+                        
+                        default: begin
+                            // Default strategy (simple MA crossover)
+                            if (price > indicator_values[0]) begin
+                                buy <= 1;
+                                sell <= 0;
+                                confidence <= 50;
+                            end else if (price < indicator_values[0]) begin
+                                buy <= 0;
+                                sell <= 1;
+                                confidence <= 50;
+                            end else begin
+                                buy <= 0;
+                                sell <= 0;
+                                confidence <= 0;
+                            end
+                        end
+                    endcase
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+endmodule
+```
+
+Key framework features:
+- Multiple predefined strategy types
+- Configurable parameters
+- Indicator independence
+- Signal confidence indication
+- Expandable strategy library
+
+This framework enables:
+- Rapid strategy development
+- Consistent interface across strategies
+- Easy experimentation with parameters
+- Strategy combination and hybridization
+- Efficient implementation of diverse approaches
+
+The custom strategy framework provides a foundation for trading system research and development.
+
+#### Strategy Parameterization Approach
+
+Effective parameterization enables strategy optimization and adaptation:
+
+```verilog
+module parameterized_strategy #(
+    parameter DW = 16,
+    parameter PARAM_COUNT = 8,
+    parameter STRATEGY_TYPE = 0
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Market data
+    input wire new_data,
+    input wire [DW-1:0] price,
+    
+    // Indicators
+    input wire [31:0] ma_value,
+    input wire [7:0] rsi_value,
+    input wire [DW-1:0] bb_upper,
+    input wire [DW-1:0] bb_lower,
+    
+    // Strategy parameters
+    input wire [7:0] parameters [PARAM_COUNT-1:0],
+    
+    // Output signals
+    output reg buy,
+    output reg sell,
+    output reg [7:0] confidence,
+    output reg done
+);
+    // Parameter index definitions
+    localparam RSI_OVERSOLD = 0,
+               RSI_OVERBOUGHT = 1,
+               MA_TYPE = 2,
+               BB_STDEV = 3,
+               SIGNAL_THRESHOLD = 4,
+               LOOKBACK_PERIOD = 5,
+               SENSITIVITY = 6,
+               FILTER_STRENGTH = 7;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, EVALUATE = 1, FILTER = 2, COMPLETE = 3;
+    
+    // Internal signals
+    reg raw_buy, raw_sell;
+    reg [7:0] raw_confidence;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            buy <= 0;
+            sell <= 0;
+            confidence <= 0;
+            done <= 0;
+            state <= IDLE;
+            raw_buy <= 0;
+            raw_sell <= 0;
+            raw_confidence <= 0;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        state <= EVALUATE;
+                        // Clear signals
+                        done <= 0;
+                    end
+                end
+                
+                EVALUATE: begin
+                    // Strategy-specific signal generation using parameters
+                    case (STRATEGY_TYPE)
+                        0: begin  // RSI Mean Reversion
+                            // Raw signals based on RSI thresholds
+                            raw_buy <= (rsi_value < parameters[RSI_OVERSOLD]);
+                            raw_sell <= (rsi_value > parameters[RSI_OVERBOUGHT]);
+                            
+                            // Confidence calculation
+                            if (rsi_value < parameters[RSI_OVERSOLD])
+                                raw_confidence <= parameters[RSI_OVERSOLD] - rsi_value;
+                            else if (rsi_value > parameters[RSI_OVERBOUGHT])
+                                raw_confidence <= rsi_value - parameters[RSI_OVERBOUGHT];
+                            else
+                                raw_confidence <= 0;
+                        end
+                        
+                        1: begin  // MA + RSI Trend Following
+                            // Trend determination with RSI confirmation
+                            if (price > ma_value && rsi_value > 50 && 
+                                rsi_value < parameters[RSI_OVERBOUGHT]) begin
+                                raw_buy <= 1;
+                                raw_sell <= 0;
+                                raw_confidence <= (rsi_value - 50) * 2;
+                            end else if (price < ma_value && rsi_value < 50 && 
+                                       rsi_value > parameters[RSI_OVERSOLD]) begin
+                                raw_buy <= 0;
+                                raw_sell <= 1;
+                                raw_confidence <= (50 - rsi_value) * 2;
+                            end else begin
+                                raw_buy <= 0;
+                                raw_sell <= 0;
+                                raw_confidence <= 0;
+                            end
+                        end
+                        
+                        2: begin  // Bollinger Band Breakout
+                            // Breakout detection with sensitivity parameter
+                            if (price > bb_upper + (parameters[SENSITIVITY] * price / 1000)) begin
+                                raw_buy <= 1;
+                                raw_sell <= 0;
+                                raw_confidence <= 70;
+                            end else if (price < bb_lower - (parameters[SENSITIVITY] * price / 1000)) begin
+                                raw_buy <= 0;
+                                raw_sell <= 1;
+                                raw_confidence <= 70;
+                            end else begin
+                                raw_buy <= 0;
+                                raw_sell <= 0;
+                                raw_confidence <= 0;
+                            end
+                        end
+                        
+                        default: begin
+                            // Simple RSI strategy
+                            raw_buy <= (rsi_value < parameters[RSI_OVERSOLD]);
+                            raw_sell <= (rsi_value > parameters[RSI_OVERBOUGHT]);
+                            raw_confidence <= 50;
+                        end
+                    endcase
+                    
+                    state <= FILTER;
+                end
+                
+                FILTER: begin
+                    // Signal filtering based on strength parameter
+                    if (raw_buy && raw_confidence >= parameters[SIGNAL_THRESHOLD]) begin
+                        buy <= 1;
+                        sell <= 0;
+                        confidence <= raw_confidence;
+                    end else if (raw_sell && raw_confidence >= parameters[SIGNAL_THRESHOLD]) begin
+                        buy <= 0;
+                        sell <= 1;
+                        confidence <= raw_confidence;
+                    end else begin
+                        buy <= 0;
+                        sell <= 0;
+                        confidence <= 0;
+                    end
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+endmodule
+```
+
+Key parameterization features:
+- Multiple parameter categories
+- Strategy-specific parameter usage
+- Signal filtering based on parameters
+- Confidence calculation
+- Sensitivity and threshold control
+
+This approach enables:
+- Strategy optimization through parameter tuning
+- Adaptation to different market conditions
+- Backtesting with parameter sweeps
+- Controlled signal generation
+- Systematic strategy development
+
+Effective parameterization creates adaptable trading systems with improved performance across various market conditions.
+
+#### Strategy Performance Metrics
+
+An integrated metrics system enables strategy evaluation and optimization:
+
+```verilog
+module strategy_performance_metrics #(
+    parameter DW = 16,
+    parameter MAX_TRADES = 32
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Trading signals
+    input wire buy,
+    input wire sell,
+    
+    // Price data
+    input wire [DW-1:0] price,
+    
+    // Control
+    input wire new_price,
+    input wire reset_stats,
+    
+    // Performance metrics
+    output reg [7:0] total_trades,
+    output reg [7:0] winning_trades,
+    output reg [7:0] losing_trades,
+    output reg [15:0] win_rate_pct,       // Win rate * 100
+    output reg [31:0] avg_win_pts,        // Average win in price points
+    output reg [31:0] avg_loss_pts,       // Average loss in price points
+    output reg [15:0] profit_factor_pct,  // Profit factor * 100
+    output reg [31:0] max_drawdown,       // Maximum drawdown
+    output reg [31:0] current_equity,     // Current equity value
+    output reg done
+);
+    // Trade tracking registers
+    reg in_position = 0;
+    reg [DW-1:0] entry_price = 0;
+    reg [31:0] position_pnl = 0;
+    
+    // Performance tracking
+    reg [31:0] total_profit = 0;
+    reg [31:0] total_loss = 0;
+    reg [31:0] cumulative_profit = 0;
+    reg [31:0] peak_equity = 0;
+    reg [31:0] trade_results [MAX_TRADES-1:0];
+    reg [7:0] trade_index = 0;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, PROCESS_SIGNALS = 1, UPDATE_METRICS = 2, CALCULATE = 3, COMPLETE = 4;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst || reset_stats) begin
+            // Reset all performance metrics
+            total_trades <= 0;
+            winning_trades <= 0;
+            losing_trades <= 0;
+            win_rate_pct <= 0;
+            avg_win_pts <= 0;
+            avg_loss_pts <= 0;
+            profit_factor_pct <= 0;
+            max_drawdown <= 0;
+            current_equity <= 0;
+            
+            in_position <= 0;
+            entry_price <= 0;
+            position_pnl <= 0;
+            total_profit <= 0;
+            total_loss <= 0;
+            cumulative_profit <= 0;
+            peak_equity <= 0;
+            trade_index <= 0;
+            
+            for (int i = 0; i < MAX_TRADES; i = i + 1) begin
+                trade_results[i] <= 0;
+            end
+            
+            done <= 0;
+            state <= IDLE;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_price) begin
+                        state <= PROCESS_SIGNALS;
+                        done <= 0;
+                    end
+                end
+                
+                PROCESS_SIGNALS: begin
+                    // Process new position entries
+                    if (!in_position && buy) begin
+                        in_position <= 1;
+                        entry_price <= price;
+                    end
+                    
+                    // Process position exits
+                    if (in_position && (sell || (buy && entry_price != price))) begin
+                        // Calculate trade result
+                        position_pnl <= price - entry_price;
+                        
+                        // Store result
+                        if (trade_index < MAX_TRADES) begin
+                            trade_results[trade_index] <= price - entry_price;
+                            trade_index <= trade_index + 1;
+                        end
+                        
+                        // Update totals
+                        total_trades <= total_trades + 1;
+                        
+                        if (price > entry_price) begin
+                            // Winning trade
+                            winning_trades <= winning_trades + 1;
+                            total_profit <= total_profit + (price - entry_price);
+                        end else if (price < entry_price) begin
+                            // Losing trade
+                            losing_trades <= losing_trades + 1;
+                            total_loss <= total_loss + (entry_price - price);
+                        end
+                        
+                        // Update equity
+                        cumulative_profit <= cumulative_profit + (price - entry_price);
+                        
+                        // Reset position
+                        in_position <= 0;
+                    end
+                    
+                    state <= UPDATE_METRICS;
+                end
+                
+                UPDATE_METRICS: begin
+                    // Update current equity
+                    current_equity <= 10000 + cumulative_profit;  // Starting capital + profits
+                    
+                    // Update peak equity
+                    if (current_equity > peak_equity)
+                        peak_equity <= current_equity;
+                    
+                    // Update drawdown
+                    if (peak_equity > current_equity && 
+                        (peak_equity - current_equity) > max_drawdown)
+                        max_drawdown <= peak_equity - current_equity;
+                    
+                    state <= CALCULATE;
+                end
+                
+                CALCULATE: begin
+                    // Calculate win rate
+                    if (total_trades > 0)
+                        win_rate_pct <= (winning_trades * 100) / total_trades;
+                    
+                    // Calculate average win
+                    if (winning_trades > 0)
+                        avg_win_pts <= total_profit / winning_trades;
+                    
+                    // Calculate average loss
+                    if (losing_trades > 0)
+                        avg_loss_pts <= total_loss / losing_trades;
+                    
+                    // Calculate profit factor
+                    if (total_loss > 0)
+                        profit_factor_pct <= (total_profit * 100) / total_loss;
+                    else if (total_profit > 0)
+                        profit_factor_pct <= 9999;  // Very large number for no losses
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+endmodule
+```
+
+Key metrics features:
+- Comprehensive trading statistics
+- Trade-by-trade tracking
+- Real-time performance calculation
+- Equity curve monitoring
+- Drawdown tracking
+
+This system enables:
+- Strategy effectiveness evaluation
+- Performance optimization
+- Risk management monitoring
+- Comparative strategy analysis
+- Systematic trading system development
+
+Performance metrics provide essential feedback for strategy refinement and selection.
+
+### Hardware Optimizations
+
+#### Pipelining Techniques
+
+Pipelining enhances throughput and clock frequency:
+
+```verilog
+module pipelined_ma_calculator #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire start,
+    input wire [DW-1:0] new_price,
+    input wire [DW-1:0] oldest_price,
+    output reg [31:0] moving_avg,
+    output reg done
+);
+    // Pipeline registers
+    reg [63:0] sum_stage1 = 0;
+    reg [63:0] sum_stage2 = 0;
+    reg [31:0] div_result = 0;
+    reg [DW-1:0] new_price_reg = 0;
+    reg [DW-1:0] oldest_price_reg = 0;
+    
+    // Pipeline control signals
+    reg valid_stage1 = 0;
+    reg valid_stage2 = 0;
+    reg valid_stage3 = 0;
+    
+    // Pipeline stages
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset all pipeline registers
+            sum_stage1 <= 0;
+            sum_stage2 <= 0;
+            div_result <= 0;
+            new_price_reg <= 0;
+            oldest_price_reg <= 0;
+            
+            valid_stage1 <= 0;
+            valid_stage2 <= 0;
+            valid_stage3 <= 0;
+            
+            moving_avg <= 0;
+            done <= 0;
+        end else begin
+            // Stage 1: Input registration and subtraction/addition preparation
+            new_price_reg <= new_price;
+            oldest_price_reg <= oldest_price;
+            valid_stage1 <= start;
+            
+            // Stage 2: Update running sum
+            if (valid_stage1) begin
+                sum_stage2 <= sum_stage1 + new_price_reg - oldest_price_reg;
+                valid_stage2 <= 1;
+            end else begin
+                valid_stage2 <= 0;
+            end
+            
+            // Stage 3: Division operation
+            if (valid_stage2) begin
+                div_result <= sum_stage2 / WINDOW;
+                valid_stage3 <= 1;
+            end else begin
+                valid_stage3 <= 0;
+            end
+            
+            // Output stage
+            if (valid_stage3) begin
+                moving_avg <= div_result;
+                done <= 1;
+            end else begin
+                done <= 0;
+            end
+        end
+    end
+endmodule
+```
+
+Key pipelining features:
+- Multi-stage calculation process
+- Pipeline stage registers
+- Valid flags for data propagation
+- Sequential operation through stages
+- Overlapped execution
+
+This approach provides:
+- Increased throughput (one result every cycle)
+- Higher achievable clock frequency
+- Better timing closure
+- Scalable performance
+- Predictable latency
+
+Pipelining enables efficient implementation of complex calculations with high throughput requirements.
+
+#### Fixed-Point Implementation
+
+Fixed-point arithmetic enhances precision while maintaining efficiency:
+
+```verilog
+module fixed_point_rsi_calculator #(
+    parameter WINDOW = 14,
+    parameter DW = 16,
+    parameter FRAC_BITS = 8  // Fractional bits for fixed-point
+)(
+    input wire clk,
+    input wire rst,
+    input wire new_data,
+    input wire [DW-1:0] price,
+    input wire [DW-1:0] oldest_price,
+    output reg [7:0] rsi,
+    output reg done
+);
+    // Fixed-point constants
+    localparam [31:0] FIXED_ONE = 1 << FRAC_BITS;  // 1.0 in fixed-point
+    localparam [31:0] FIXED_HUNDRED = 100 << FRAC_BITS;  // 100.0 in fixed-point
+    
+    // Internal registers (fixed-point)
+    reg [31:0] gain_sum = 0;
+    reg [31:0] loss_sum = 0;
+    reg [31:0] prev_price = 0;
+    reg initialized = 0;
+    reg [7:0] sample_count = 0;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, INIT = 1, ACCUMULATE = 2, CALCULATE = 3, COMPLETE = 4;
+    
+    // Fixed-point calculation registers
+    reg [31:0] rs_value;
+    reg [31:0] rsi_fixed;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            gain_sum <= 0;
+            loss_sum <= 0;
+            prev_price <= 0;
+            initialized <= 0;
+            sample_count <= 0;
+            rsi <= 0;
+            done <= 0;
+            state <= IDLE;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        if (!initialized) begin
+                            state <= INIT;
+                        end else begin
+                            state <= ACCUMULATE;
+                        end
+                        done <= 0;
+                    end
+                end
+                
+                INIT: begin
+                    // Initialize with first price
+                    prev_price <= price << FRAC_BITS;  // Convert to fixed-point
+                    initialized <= 1;
+                    state <= IDLE;
+                end
+                
+                ACCUMULATE: begin
+                    // Calculate gain/loss with fixed-point precision
+                    if ((price << FRAC_BITS) > prev_price) begin
+                        // Gain situation
+                        gain_sum <= gain_sum + ((price << FRAC_BITS) - prev_price);
+                    end else if ((price << FRAC_BITS) < prev_price) begin
+                        // Loss situation
+                        loss_sum <= loss_sum + (prev_price - (price << FRAC_BITS));
+                    end
+                    
+                    // Update previous price
+                    prev_price <= price << FRAC_BITS;
+                    
+                    // Update sample count
+                    if (sample_count < WINDOW)
+                        sample_count <= sample_count + 1;
+                    
+                    // Move to calculation if enough samples
+                    if (sample_count >= WINDOW - 1)
+                        state <= CALCULATE;
+                    else
+                        state <= IDLE;
+                end
+                
+                CALCULATE: begin
+                    // Fixed-point RSI calculation
+                    if (loss_sum > 0) begin
+                        // Calculate RS with fixed-point precision
+                        rs_value <= (gain_sum * FIXED_ONE) / loss_sum;
+                        
+                        // Calculate RSI = 100 - (100 / (1 + RS))
+                        rsi_fixed <= FIXED_HUNDRED - 
+                                    ((FIXED_HUNDRED * FIXED_ONE) / (FIXED_ONE + rs_value));
+                        
+                        // Convert fixed-point to integer
+                        rsi <= rsi_fixed >> FRAC_BITS;
+                    end else if (gain_sum > 0) begin
+                        // All gains, no losses = RSI 100
+                        rsi <= 100;
+                    end else begin
+                        // No gains or losses = RSI 50
+                        rsi <= 50;
+                    end
+                    
+                    state <= COMPLETE;
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+endmodule
+```
+
+Key fixed-point features:
+- Configurable fractional precision
+- Consistent representation throughout calculation
+- Precise gain/loss tracking
+- Accurate division operations
+- Controlled conversion to integer output
+
+This approach enables:
+- Higher calculation precision
+- Decimal fraction representation
+- More accurate technical indicators
+- Reduced cumulative error
+- Better handling of small price changes
+
+Fixed-point implementation enhances the accuracy of technical indicators while maintaining efficient FPGA implementation.
+
+#### Custom Division Units
+
+Optimized division accelerates critical calculations:
+
+```verilog
+module fast_division_unit #(
+    parameter DIVIDEND_WIDTH = 32,
+    parameter DIVISOR_WIDTH = 16,
+    parameter FRACTIONAL_BITS = 8
+)(
+    input wire clk,
+    input wire rst,
+    input wire start,
+    input wire [DIVIDEND_WIDTH-1:0] dividend,
+    input wire [DIVISOR_WIDTH-1:0] divisor,
+    output reg [DIVIDEND_WIDTH-1:0] quotient,
+    output reg done
+);
+    // Division method selection parameters
+    parameter METHOD = 0;  // 0=Sequential, 1=CORDIC, 2=Newton-Raphson
+    
+    // Sequential division state
+    reg [DIVIDEND_WIDTH-1:0] remainder;
+    reg [DIVIDEND_WIDTH-1:0] temp_quotient;
+    reg [DIVISOR_WIDTH-1:0] shifted_divisor;
+    reg [5:0] bit_index;
+    
+    // State machine
+    reg [2:0] state = 0;
+    localparam IDLE = 0, SETUP = 1, DIVIDE = 2, SHIFT = 3, COMPLETE = 4;
+    
+    // Method-specific registers
+    reg [DIVIDEND_WIDTH-1:0] x_next;  // For iterative methods
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            quotient <= 0;
+            done <= 0;
+            state <= IDLE;
+            remainder <= 0;
+            temp_quotient <= 0;
+            bit_index <= 0;
+        end else begin
+            case (METHOD)
+                0: begin  // Sequential division
+                    case (state)
+                        IDLE: begin
+                            if (start) begin
+                                state <= SETUP;
+                                done <= 0;
+                            end
+                        end
+                        
+                        SETUP: begin
+                            // Initialize division
+                            remainder <= {DIVIDEND_WIDTH{1'b0}};
+                            temp_quotient <= {DIVIDEND_WIDTH{1'b0}};
+                            bit_index <= DIVIDEND_WIDTH - 1;
+                            state <= DIVIDE;
+                        end
+                        
+                        DIVIDE: begin
+                            // Shift in next bit from dividend
+                            remainder <= {remainder[DIVIDEND_WIDTH-2:0], dividend[bit_index]};
+                            
+                            // Check if remainder >= divisor
+                            if ({remainder[DIVIDEND_WIDTH-2:0], dividend[bit_index]} >= 
+                                {divisor, {DIVIDEND_WIDTH-DIVISOR_WIDTH{1'b0}}}) begin
+                                // Subtraction and set quotient bit
+                                remainder <= {remainder[DIVIDEND_WIDTH-2:0], dividend[bit_index]} - 
+                                            {divisor, {DIVIDEND_WIDTH-DIVISOR_WIDTH{1'b0}}};
+                                temp_quotient[bit_index] <= 1'b1;
+                            end
+                            
+                            state <= SHIFT;
+                        end
+                        
+                        SHIFT: begin
+                            // Check if all bits processed
+                            if (bit_index == 0) begin
+                                quotient <= temp_quotient;
+                                state <= COMPLETE;
+                            end else begin
+                                bit_index <= bit_index - 1;
+                                state <= DIVIDE;
+                            end
+                        end
+                        
+                        COMPLETE: begin
+                            done <= 1;
+                            state <= IDLE;
+                        end
+                        
+                        default: state <= IDLE;
+                    endcase
+                end
+                
+                1: begin  // CORDIC division approximation
+                    // CORDIC implementation for division
+                    // This is a simplified placeholder; a full implementation
+                    // would include the complete CORDIC algorithm
+                    case (state)
+                        IDLE: begin
+                            if (start) begin
+                                state <= SETUP;
+                                done <= 0;
+                            end
+                        end
+                        
+                        SETUP: begin
+                            // Initialize CORDIC algorithm
+                            x_next <= dividend << FRACTIONAL_BITS;
+                            bit_index <= 16;  // Number of iterations
+                            state <= DIVIDE;
+                        end
+                        
+                        DIVIDE: begin
+                            // CORDIC iteration (simplified)
+                            if (bit_index > 0) begin
+                                // Update approximation
+                                if (divisor != 0) begin
+                                    x_next <= x_next - (x_next >> bit_index) + 
+                                            ((divisor * x_next) >> (bit_index + FRACTIONAL_BITS));
+                                end
+                                bit_index <= bit_index - 1;
+                            end else begin
+                                quotient <= x_next;
+                                state <= COMPLETE;
+                            end
+                        end
+                        
+                        COMPLETE: begin
+                            done <= 1;
+                            state <= IDLE;
+                        end
+                        
+                        default: state <= IDLE;
+                    endcase
+                end
+                
+                2: begin  // Newton-Raphson reciprocal approximation
+                    // Newton-Raphson implementation for division
+                    // This is a simplified placeholder; a full implementation
+                    // would include the complete Newton-Raphson algorithm
+                    case (state)
+                        IDLE: begin
+                            if (start) begin
+                                state <= SETUP;
+                                done <= 0;
+                            end
+                        end
+                        
+                        SETUP: begin
+                            // Initialize Newton-Raphson approximation
+                            x_next <= 1 << FRACTIONAL_BITS;  // Initial guess = 1.0
+                            bit_index <= 4;  // Number of iterations
+                            state <= DIVIDE;
+                        end
+                        
+                        DIVIDE: begin
+                            // Newton-Raphson iteration (simplified)
+                            if (bit_index > 0) begin
+                                // x_next = x * (2 - D*x)
+                                // Where x is approximation of 1/D
+                                if (divisor != 0) begin
+                                    x_next <= (x_next * ((2 << FRACTIONAL_BITS) - 
+                                              ((divisor * x_next) >> FRACTIONAL_BITS))) >> FRACTIONAL_BITS;
+                                end
+                                bit_index <= bit_index - 1;
+                            end else begin
+                                // Final result: dividend * (1/divisor)
+                                quotient <= (dividend * x_next) >> FRACTIONAL_BITS;
+                                state <= COMPLETE;
+                            end
+                        end
+                        
+                        COMPLETE: begin
+                            done <= 1;
+                            state <= IDLE;
+                        end
+                        
+                        default: state <= IDLE;
+                    endcase
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key custom division features:
+- Multiple division algorithm options
+- Configurable precision
+- Fractional result support
+- Optimized for FPGA implementation
+- Method selection based on requirements
+
+This approach enables:
+- Accelerated division operations
+- Reduced critical path delay
+- Higher calculation throughput
+- Better resource utilization
+- Customized performance/accuracy tradeoffs
+
+Custom division units optimize a critical component of many technical indicators, improving overall system performance.
+
+#### Multi-Clock Domain Design
+
+A multi-clock domain approach enhances performance and flexibility:
+
+```verilog
+module multi_clock_trading_system (
+    // Fast clock domain
+    input wire fast_clk,
+    input wire fast_rst,
+    
+    // Slow clock domain
+    input wire slow_clk,
+    input wire slow_rst,
+    
+    // Market data input (slow domain)
+    input wire new_data,
+    input wire [15:0] price,
+    
+    // Calculation results (fast domain)
+    output wire [31:0] ma_value,
+    output wire [7:0] rsi_value,
+    
+    // Trading signals (slow domain)
+    output wire buy_signal,
+    output wire sell_signal
+);
+    // Cross-domain synchronization signals
+    wire price_valid_fast;
+    wire [15:0] price_fast;
+    wire [31:0] ma_slow;
+    wire [7:0] rsi_slow;
+    wire calc_done_fast;
+    wire calc_done_slow;
+    
+    // Fast clock domain: Calculations
+    // ------------------------------
+    
+    // Synchronizers for data coming from slow domain
+    sync_fifo #(
+        .WIDTH(17),  // price + valid
+        .DEPTH(4)
+    ) input_sync (
+        .wr_clk(slow_clk),
+        .wr_rst(slow_rst),
+        .wr_en(new_data),
+        .wr_data({1'b1, price}),
+        
+        .rd_clk(fast_clk),
+        .rd_rst(fast_rst),
+        .rd_data({price_valid_fast, price_fast}),
+        .empty()
+    );
+    
+    // Indicator calculations in fast domain
+    fast_ma_calculator fast_ma (
+        .clk(fast_clk),
+        .rst(fast_rst),
+        .new_data(price_valid_fast),
+        .price(price_fast),
+        .ma(ma_value),
+        .done(ma_done_fast)
+    );
+    
+    fast_rsi_calculator fast_rsi (
+        .clk(fast_clk),
+        .rst(fast_rst),
+        .new_data(price_valid_fast),
+        .price(price_fast),
+        .rsi(rsi_value),
+        .done(rsi_done_fast)
+    );
+    
+    // Combined calculation status
+    assign calc_done_fast = ma_done_fast & rsi_done_fast;
+    
+    // Slow clock domain: Decision making
+    // ---------------------------------
+    
+    // Synchronizers for data coming from fast domain
+    sync_fifo #(
+        .WIDTH(40),  // ma + rsi + done
+        .DEPTH(4)
+    ) output_sync (
+        .wr_clk(fast_clk),
+        .wr_rst(fast_rst),
+        .wr_en(calc_done_fast),
+        .wr_data({ma_value, rsi_value, calc_done_fast}),
+        
+        .rd_clk(slow_clk),
+        .rd_rst(slow_rst),
+        .rd_data({ma_slow, rsi_slow, calc_done_slow}),
+        .empty()
+    );
+    
+    // Trading decision in slow domain
+    trading_decision slow_decision (
+        .clk(slow_clk),
+        .rst(slow_rst),
+        .price_now(price),
+        .moving_avg(ma_slow),
+        .rsi(rsi_slow),
+        .buy(buy_signal),
+        .sell(sell_signal)
+    );
+endmodule
+```
+
+Key multi-clock features:
+- Dedicated fast clock for calculations
+- Slower clock for interface and decisions
+- Cross-domain synchronization
+- Domain-specific optimization
+- Clean separation of functions
+
+This approach enables:
+- Higher performance for critical calculations
+- Efficient integration with slower interfaces
+- Optimized resource utilization
+- Function-appropriate timing
+- Improved system flexibility
+
+Multi-clock design offers significant performance advantages for calculation-intensive applications like technical analysis.
+
+#### Resource Sharing Strategies
+
+Efficient resource sharing optimizes FPGA utilization:
+
+```verilog
+module shared_resource_calculator #(
+    parameter DW = 16,
+    parameter INDICATOR_COUNT = 4
+)(
+    input wire clk,
+    input wire rst,
+    
+    // Data input
+    input wire new_data,
+    input wire [DW-1:0] price,
+    
+    // Configuration
+    input wire [3:0] indicator_select,
+    input wire [7:0] window_size,
+    
+    // Output
+    output reg [31:0] result,
+    output reg done
+);
+    // Shared arithmetic unit
+    reg [63:0] accum = 0;
+    reg [31:0] div_result = 0;
+    
+    // Shared memory resources
+    reg [DW-1:0] price_history [0:63];  // Shared price buffer
+    reg [5:0] write_ptr = 0;
+    reg [5:0] read_ptr = 0;
+    reg [6:0] count = 0;
+    
+    // Indicator-specific state
+    reg [63:0] ma_sum = 0;
+    reg [31:0] gain_sum = 0;
+    reg [31:0] loss_sum = 0;
+    reg [DW-1:0] prev_price = 0;
+    
+    // Calculation state
+    reg [3:0] calc_type = 0;
+    reg [7:0] calc_period = 0;
+    reg calc_active = 0;
+    
+    // Shared arithmetic unit state machine
+    reg [3:0] state = 0;
+    localparam IDLE = 0, STORE_PRICE = 1, INIT_CALC = 2, ACCUMULATE = 3, 
+               DIVISION = 4, FINALIZE = 5, COMPLETE = 6;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset all registers
+            accum <= 0;
+            div_result <= 0;
+            write_ptr <= 0;
+            read_ptr <= 0;
+            count <= 0;
+            ma_sum <= 0;
+            gain_sum <= 0;
+            loss_sum <= 0;
+            prev_price <= 0;
+            calc_type <= 0;
+            calc_period <= 0;
+            calc_active <= 0;
+            result <= 0;
+            done <= 0;
+            state <= IDLE;
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (new_data) begin
+                        state <= STORE_PRICE;
+                        done <= 0;
+                    end
+                end
+                
+                STORE_PRICE: begin
+                    // Store new price in circular buffer
+                    price_history[write_ptr] <= price;
+                    write_ptr <= (write_ptr + 1) % 64;
+                    
+                    // Update count
+                    if (count < 64)
+                        count <= count + 1;
+                    else
+                        read_ptr <= (read_ptr + 1) % 64;
+                    
+                    // Check if we have enough data
+                    if (count >= window_size)
+                        state <= INIT_CALC;
+                    else
+                        state <= IDLE;
+                end
+                
+                INIT_CALC: begin
+                    // Setup calculation based on indicator_select
+                    calc_type <= indicator_select;
+                    calc_period <= window_size;
+                    calc_active <= 1;
+                    
+                    // Initialize calculation variables
+                    case (indicator_select)
+                        0: begin  // Moving Average
+                            accum <= 0;
+                            read_ptr <= (write_ptr + 64 - window_size) % 64;
+                        end
+                        
+                        1: begin  // RSI
+                            gain_sum <= 0;
+                            loss_sum <= 0;
+                            prev_price <= price_history[(write_ptr + 63) % 64];
+                            read_ptr <= (write_ptr + 64 - window_size) % 64;
+                        end
+                        
+                        2: begin  // Exponential MA
+                            accum <= price_history[(write_ptr + 63) % 64] << 8;  // Fixed-point
+                            read_ptr <= (write_ptr + 64 - window_size + 1) % 64;
+                        end
+                        
+                        3: begin  // Standard Deviation
+                            accum <= 0;  // First pass: calculate mean
+                            read_ptr <= (write_ptr + 64 - window_size) % 64;
+                        end
+                        
+                        default: begin
+                            state <= IDLE;
+                            calc_active <= 0;
+                        end
+                    endcase
+                    
+                    if (calc_active)
+                        state <= ACCUMULATE;
+                end
+                
+                ACCUMULATE: begin
+                    // Perform accumulation based on indicator type
+                    case (calc_type)
+                        0: begin  // Moving Average
+                            // Sum all prices in window
+                            if (read_ptr != write_ptr) begin
+                                accum <= accum + price_history[read_ptr];
+                                read_ptr <= (read_ptr + 1) % 64;
+                            end else begin
+                                state <= DIVISION;
+                            end
+                        end
+                        
+                        1: begin  // RSI
+                            // Accumulate gains and losses
+                            if (read_ptr != write_ptr) begin
+                                if (price_history[read_ptr] > prev_price)
+                                    gain_sum <= gain_sum + (price_history[read_ptr] - prev_price);
+                                else if (price_history[read_ptr] < prev_price)
+                                    loss_sum <= loss_sum + (prev_price - price_history[read_ptr]);
+                                
+                                prev_price <= price_history[read_ptr];
+                                read_ptr <= (read_ptr + 1) % 64;
+                            end else begin
+                                state <= DIVISION;
+                            end
+                        end
+                        
+                        2: begin  // Exponential MA
+                            // EMA calculation with shared arithmetic
+                            if (read_ptr != write_ptr) begin
+                                // alpha = 2/(period+1)
+                                // EMA = price * alpha + EMA * (1-alpha)
+                                // Using fixed-point arithmetic (8 fractional bits)
+                                reg [15:0] alpha = (2 << 8) / (calc_period + 1);
+                                accum <= ((price_history[read_ptr] << 8) * alpha + 
+                                         accum * (256 - alpha)) >> 8;
+                                
+                                read_ptr <= (read_ptr + 1) % 64;
+                            end else begin
+                                state <= FINALIZE;
+                            end
+                        end
+                        
+                        3: begin  // Standard Deviation (first pass: mean)
+                            // First accumulate for mean calculation
+                            if (read_ptr != write_ptr) begin
+                                accum <= accum + price_history[read_ptr];
+                                read_ptr <= (read_ptr + 1) % 64;
+                            end else begin
+                                div_result <= accum / calc_period;  // Calculate mean
+                                accum <= 0;  // Reset for variance calculation
+                                read_ptr <= (write_ptr + 64 - calc_period) % 64;
+                                state <= FINALIZE;  // Go to second pass
+                            end
+                        end
+                        
+                        default: state <= IDLE;
+                    endcase
+                end
+                
+                DIVISION: begin
+                    // Shared division operation
+                    case (calc_type)
+                        0: begin  // Moving Average
+                            div_result <= accum / calc_period;
+                            state <= FINALIZE;
+                        end
+                        
+                        1: begin  // RSI
+                            // Calculate RSI = 100 * gain_sum / (gain_sum + loss_sum)
+                            if (gain_sum + loss_sum > 0)
+                                div_result <= (100 * gain_sum) / (gain_sum + loss_sum);
+                            else
+                                div_result <= 50;  // Default when no movement
+                            
+                            state <= FINALIZE;
+                        end
+                        
+                        default: state <= FINALIZE;
+                    endcase
+                end
+                
+                FINALIZE: begin
+                    // Final result preparation
+                    case (calc_type)
+                        0: begin  // Moving Average
+                            result <= div_result;
+                            state <= COMPLETE;
+                        end
+                        
+                        1: begin  // RSI
+                            result <= div_result;
+                            state <= COMPLETE;
+                        end
+                        
+                        2: begin  // Exponential MA
+                            result <= accum >> 8;  // Convert fixed-point to integer
+                            state <= COMPLETE;
+                        end
+                        
+                        3: begin  // Standard Deviation (second pass: variance)
+                            if (read_ptr != write_ptr) begin
+                                // Calculate sum of squared differences
+                                if (price_history[read_ptr] > div_result)
+                                    accum <= accum + (price_history[read_ptr] - div_result) * 
+                                            (price_history[read_ptr] - div_result);
+                                else
+                                    accum <= accum + (div_result - price_history[read_ptr]) * 
+                                            (div_result - price_history[read_ptr]);
+                                
+                                read_ptr <= (read_ptr + 1) % 64;
+                            end else begin
+                                // Calculate standard deviation (sqrt of variance)
+                                // Simple integer square root approximation
+                                result <= integer_sqrt(accum / calc_period);
+                                state <= COMPLETE;
+                            end
+                        end
+                        
+                        default: state <= COMPLETE;
+                    endcase
+                end
+                
+                COMPLETE: begin
+                    done <= 1;
+                    calc_active <= 0;
+                    state <= IDLE;
+                end
+                
+                default: state <= IDLE;
+            endcase
+        end
+    end
+    
+    // Simple integer square root function
+    function [31:0] integer_sqrt;
+        input [31:0] num;
+        reg [31:0] res;
+        reg [31:0] bit;
+        begin
+            res = 0;
+            bit = 1 << 30;
+            
+            while (bit > num)
+                bit = bit >> 2;
+            
+            while (bit != 0) begin
+                if (num >= res + bit) begin
+                    num = num - (res + bit);
+                    res = (res >> 1) + bit;
+                end else begin
+                    res = res >> 1;
+                end
+                bit = bit >> 2;
+            end
+            
+            integer_sqrt = res;
+        end
+    endfunction
+endmodule
+```
+
+Key resource sharing features:
+- Common arithmetic unit
+- Shared price history buffer
+- Time-multiplexed calculation
+- Indicator-specific state preservation
+- Flexible configuration
+
+This approach enables:
+- Reduced FPGA resource utilization
+- Support for multiple indicators
+- Configurable operation
+- Efficient implementation
+- Hardware scalability
+
+Resource sharing strategies optimize FPGA utilization while maintaining calculation capabilities.
+
+#### Power Optimization Approaches
+
+Power-efficient design enhances system reliability and efficiency:
+
+```verilog
+module power_optimized_trading_system (
+    input wire clk,
+    input wire rst,
+    
+    // Market data input
+    input wire new_data,
+    input wire [15:0] price,
+    
+    // Power management
+    input wire power_save_mode,
+    
+    // Calculation results
+    output wire [31:0] moving_avg,
+    output wire [7:0] rsi,
+    
+    // Trading signals
+    output wire buy,
+    output wire sell,
+    
+    // Status
+    output reg active,
+    output reg power_status
+);
+    // Clock gating
+    wire calc_clk;
+    reg clk_enable;
+    
+    // Enable clock only when needed
+    assign calc_clk = clk & clk_enable;
+    
+    // Power domains
+    reg calc_power_on = 1;
+    reg decision_power_on = 1;
+    
+    // Activity detection
+    reg [15:0] last_price = 0;
+    reg [19:0] inactive_counter = 0;
+    localparam INACTIVE_THRESHOLD = 20'hFFFFF;  // ~1 million cycles
+    
+    // Power management state
+    reg [1:0] power_state = 0;
+    localparam FULL_POWER = 0, LOW_POWER = 1, ULTRA_LOW_POWER = 2;
+    
+    // Trading system with power management
+    trading_system_with_power trading_core (
+        .clk(calc_clk),
+        .rst(rst),
+        .price_in(price),
+        .new_price(new_data & calc_power_on),
+        .moving_avg(moving_avg),
+        .rsi(rsi),
+        .buy(buy),
+        .sell(sell),
+        .calc_power_on(calc_power_on),
+        .decision_power_on(decision_power_on)
+    );
+    
+    // Activity monitoring
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            inactive_counter <= 0;
+            last_price <= 0;
+            active <= 1;
+        end else if (new_data) begin
+            // Activity detected
+            if (price != last_price) begin
+                inactive_counter <= 0;
+                last_price <= price;
+                active <= 1;
+            end else begin
+                // Same price, might be inactive
+                if (inactive_counter < INACTIVE_THRESHOLD)
+                    inactive_counter <= inactive_counter + 1;
+                else
+                    active <= 0;
+            end
+        end else begin
+            // No new data
+            if (inactive_counter < INACTIVE_THRESHOLD)
+                inactive_counter <= inactive_counter + 1;
+            else
+                active <= 0;
+        end
+    end
+    
+    // Power management
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            power_state <= FULL_POWER;
+            calc_power_on <= 1;
+            decision_power_on <= 1;
+            clk_enable <= 1;
+            power_status <= 1;
+        end else begin
+            // Update power state based on activity and mode
+            if (power_save_mode) begin
+                if (!active && inactive_counter > INACTIVE_THRESHOLD) begin
+                    // Long inactivity - ultra low power
+                    power_state <= ULTRA_LOW_POWER;
+                end else if (!active) begin
+                    // Short inactivity - low power
+                    power_state <= LOW_POWER;
+                end else begin
+                    // Active - full power
+                    power_state <= FULL_POWER;
+                end
+            end else begin
+                // Power save mode disabled - always full power
+                power_state <= FULL_POWER;
+            end
+            
+            // Apply power state
+            case (power_state)
+                FULL_POWER: begin
+                    calc_power_on <= 1;
+                    decision_power_on <= 1;
+                    clk_enable <= 1;
+                    power_status <= 1;
+                end
+                
+                LOW_POWER: begin
+                    // Reduce calculation frequency
+                    clk_enable <= !clk_enable;  // 50% duty cycle
+                    calc_power_on <= 1;
+                    decision_power_on <= 1;
+                    power_status <= 0;
+                end
+                
+                ULTRA_LOW_POWER: begin
+                    // Minimal power consumption
+                    calc_power_on <= 0;  // Turn off calculation unit
+                    clk_enable <= new_data;  // Clock only when new data
+                    decision_power_on <= new_data;  // Decision logic only when needed
+                    power_status <= 0;
+                end
+                
+                default: begin
+                    calc_power_on <= 1;
+                    decision_power_on <= 1;
+                    clk_enable <= 1;
+                    power_status <= 1;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key power optimization features:
+- Clock gating for inactive periods
+- Power domain management
+- Activity monitoring
+- Multiple power states
+- Adaptive clock frequency
+
+This approach enables:
+- Reduced power consumption
+- Lower heat generation
+- Improved system reliability
+- Efficient battery operation
+- Environmental sustainability
+
+Power optimization is particularly valuable for deployed trading systems with continuous operation requirements.
+
+## 12. Design Considerations and Tradeoffs
+
+### Integer vs. Fixed-Point Arithmetic
+
+#### Precision Analysis
+
+The choice between integer and fixed-point arithmetic involves precision tradeoffs:
+
+**Integer Arithmetic (Current Implementation)**:
+- Uses whole-number representation throughout
+- Division truncates fractional results (rounds toward zero)
+- Precision limited to whole units
+- Simple implementation with minimal overhead
+- Adequate for many trading applications
+
+**Fixed-Point Arithmetic (Alternative)**:
+- Allocates bits for fractional representation
+- Typical format: 16.16 (16 integer bits, 16 fractional bits)
+- Maintains decimal precision through calculations
+- Requires scaling operations for arithmetic
+- More accurate for small price movements
+
+**Precision Requirements Analysis**:
+1. **Moving Average Calculation**:
+   - Integer division: `sum / WINDOW`
+   - For WINDOW = 20, resolution is 1/20 = 0.05 units
+   - Error magnitude: up to 0.05 units per calculation
+   - Cumulative error: potentially significant over time
+   - Fixed-point alternative: `(sum << 16) / WINDOW` with 16 fractional bits
+
+2. **RSI Calculation**:
+   - Integer division: `(100 * gain_sum) / (gain_sum + loss_sum)`
+   - Resolution: minimum 1% RSI value
+   - Meaningful for trading decisions (30/70 thresholds)
+   - Critical near threshold boundaries
+   - Fixed-point alternative: higher precision near boundaries
+
+3. **Technical Analysis Requirements**:
+   - Precision needs depend on price magnitude and volatility
+   - High-value instruments (e.g., BTC): integer sufficient
+   - Low-value instruments: fixed-point preferred
+   - Mean reversion strategies: higher precision beneficial
+   - Trend-following strategies: integer often sufficient
+
+**Recommendation**:
+- Integer arithmetic suitable for:
+  - High-value instruments
+  - Strong trend identification
+  - Simple trading strategies
+  - Resource-constrained implementations
+
+- Fixed-point arithmetic beneficial for:
+  - Low-value instruments
+  - Precise reversal detection
+  - Complex statistical indicators
+  - When calculation accuracy is critical
+
+The implementation provides a foundation for both approaches, with integer arithmetic as the default and fixed-point as an extension option.
+
+#### Resource Impact Comparison
+
+The resource utilization impact of integer vs. fixed-point implementations:
+
+**Register Width Requirements**:
+
+| Component | Integer Width | Fixed-Point Width | Increase |
+|-----------|--------------|-------------------|----------|
+| Price Data | 16 bits | 16.16 = 32 bits | 100% |
+| Sum Register | 64 bits | 64.16 = 80 bits | 25% |
+| MA Result | 32 bits | 32.16 = 48 bits | 50% |
+| RSI Accumulators | 32 bits | 32.16 = 48 bits | 50% |
+| Average Resource Increase | | | 56% |
+
+**Arithmetic Operation Complexity**:
+
+| Operation | Integer Implementation | Fixed-Point Implementation | Impact |
+|-----------|------------------------|----------------------------|--------|
+| Addition | Direct addition | Direct addition | No change |
+| Subtraction | Direct subtraction | Direct subtraction | No change |
+| Multiplication | Standard multiply | Multiply + shift | 25% increase |
+| Division | Standard divide | Scale, divide, shift | 50% increase |
+| Comparison | Direct comparison | Direct comparison | No change |
+| Average Complexity Increase | | | 15% |
+
+**FPGA Resource Utilization**:
+
+| Resource Type | Integer Impact | Fixed-Point Impact | Difference |
+|---------------|----------------|-------------------|------------|
+| Registers | Base | ~50% increase | Significant |
+| LUTs | Base | ~20% increase | Moderate |
+| DSP Blocks | Base | ~30% increase | Moderate |
+| Memory | Base | ~40% increase | Significant |
+| Overall Resource Impact | Base | ~35% increase | Moderate |
+
+**Performance Characteristics**:
+
+| Aspect | Integer Approach | Fixed-Point Approach | Tradeoff |
+|--------|------------------|----------------------|----------|
+| Maximum Clock Frequency | Higher | Lower (~10-15%) | Performance |
+| Calculation Latency | Lower | Higher (~20%) | Latency |
+| Result Precision | Lower | Higher | Accuracy |
+| Implementation Complexity | Lower | Higher | Development |
+
+**Scaling Considerations**:
+- Integer implementation scales better with increased window size
+- Fixed-point implementation scales better with increased precision requirements
+- Multi-instrument systems: resource impact multiplied by instrument count
+- Pipeline architecture can mitigate performance impact of fixed-point
+
+These resource impact comparisons inform implementation decisions based on specific application requirements and available FPGA resources.
+
+#### Implementation Complexity
+
+The implementation complexity comparison between integer and fixed-point approaches:
+
+**Integer Arithmetic Implementation**:
+```verilog
+// Moving Average calculation
+always @(posedge clk) begin
+    if (start) begin
+        sum <= sum + new_price - oldest_price;
+        moving_avg <= sum / WINDOW;
+    end
+end
+```
+- Direct arithmetic operations
+- No scaling requirements
+- Simple division implementation
+- Straightforward design
+- Minimal signal management
+
+**Fixed-Point Arithmetic Implementation**:
+```verilog
+// Fixed-point constants and types
+localparam FRAC_BITS = 16;
+localparam [31:0] FIXED_ONE = 1 << FRAC_BITS;
+
+// Moving Average calculation with fixed-point
+always @(posedge clk) begin
+    if (start) begin
+        sum_fixed <= sum_fixed + (new_price << FRAC_BITS) - (oldest_price << FRAC_BITS);
+        sum_scaled <= sum_fixed / WINDOW;
+        moving_avg <= {sum_scaled[47:32], sum_scaled[31:16]};  // Extract integer and fraction
+    end
+end
+```
+- Additional scaling operations
+- Explicit fraction management
+- More complex signal paths
+- Increased register management
+- More involved debugging
+
+**Development Impact Factors**:
+
+1. **Code Complexity**:
+   - Integer: ~100 lines typical implementation
+   - Fixed-Point: ~150 lines with fraction handling
+   - Increased comment requirements for fixed-point
+   - More complex function interfaces
+   - Additional helper functions for fixed-point
+
+2. **Verification Complexity**:
+   - Integer: Simple result checking
+   - Fixed-Point: Precision verification required
+   - More complex test vectors
+   - Increased verification time
+   - Additional edge case handling
+
+3. **Debugging Challenges**:
+   - Integer: Direct value inspection
+   - Fixed-Point: Format conversion for debugging
+   - Additional visualization tools
+   - More complex trace analysis
+   - Increased simulation requirements
+
+4. **Maintenance Considerations**:
+   - Integer: Straightforward updates
+   - Fixed-Point: Format consistency required
+   - Precision documentation needed
+   - Format conversion management
+   - Increased refactoring complexity
+
+5. **Integration Complexity**:
+   - Integer: Direct connection to standard modules
+   - Fixed-Point: Interface adapters often required
+   - Format standardization across modules
+   - Consistent scaling requirements
+   - Format documentation for users
+
+The complexity differences highlight the tradeoff between implementation simplicity and precision requirements. For many trading applications, the integer approach provides sufficient precision with minimal complexity, while fixed-point offers enhanced precision at the cost of increased implementation complexity.
+
+#### Error Propagation Characteristics
+
+The error characteristics of integer and fixed-point implementations differ significantly:
+
+**Integer Arithmetic Error Analysis**:
+
+1. **Truncation Error**:
+   - Division operation truncates fractions
+   - Error up to 1 unit per division
+   - Non-uniform distribution (biased toward negative)
+   - Example: 103/20 = 5 (true value 5.15)
+   - Error magnitude: 0.15 units (3% relative error)
+
+2. **Accumulation Error**:
+   - Sliding window algorithm maintains running sum
+   - Truncation errors can accumulate over time
+   - Worst case: biased truncation in one direction
+   - Example: 20 consecutive divisions with similar error
+   - Potential cumulative error: several units
+
+3. **Error Significance**:
+   - Relative error decreases with price magnitude
+   - Critical for small price movements
+   - Less significant for large price values
+   - Can impact threshold crossing detection
+   - May cause missed trading signals
+
+**Fixed-Point Arithmetic Error Analysis**:
+
+1. **Representation Error**:
+   - Limited fractional bits (typically 8-16)
+   - Minimum representable value: 2^(-FRAC_BITS)
+   - For 16 fractional bits: ~1.5e-5 units
+   - Bounded precision for irrational values
+   - Significantly reduced truncation error
+
+2. **Rounding Strategies**:
+   - Truncation: Fast but biased
+   - Round to nearest: More accurate but complex
+   - Fixed-point offers controlled rounding
+   - Example: 103/20 with 16 fractional bits
+   - Result: 5.15 ± 1.5e-5 units
+
+3. **Error Propagation**:
+   - Better bounded error accumulation
+   - Controlled precision loss
+   - Consistent error characteristics
+   - Predictable error bounds
+   - Reduced impact on threshold detection
+
+**Comparative Error Example**:
+
+For calculating a 20-period moving average of prices fluctuating around 1000:
+
+| Price Pattern | True MA | Integer MA | Fixed-Point MA (16-bit) |
+|---------------|---------|------------|------------------------|
+| Small oscillation (±5) | 1000.25 | 1000 | 1000.25 |
+| Critical threshold 1000.4 | 1000.4 | 1000 | 1000.40 |
+| RSI calculation gain/loss | 0.15 ratio | 0 ratio | 0.15 ratio |
+| Trading signal generated? | Yes | No | Yes |
+
+This example demonstrates how integer truncation can lose critical information for trading decisions, while fixed-point maintains the necessary precision.
+
+**Error Mitigation Strategies**:
+- Integer: Conservative thresholds to account for errors
+- Fixed-point: Appropriate fractional bit allocation
+- Both: Periodic recalculation to reset accumulated errors
+- Both: Validation against floating-point reference
+- Both: Awareness of precision limitations in strategy design
+
+Understanding these error propagation characteristics is essential for developing reliable trading strategies, particularly for mean reversion approaches sensitive to small price movements.
+
+#### Recommended Implementation Approaches
+
+Based on the analysis of precision requirements, resource impact, implementation complexity, and error propagation, the following implementation approaches are recommended:
+
+**For Standard Trading Applications**:
+```verilog
+// Integer implementation with wider registers
+module enhanced_integer_ma #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Wider accumulator for better precision
+    reg [63:0] sum = 0;
+    
+    // Conservative division handling
+    always @(posedge clk) begin
+        if (start) begin
+            // Update sum
+            sum <= sum + new_price - oldest_price;
+            
+            // Division with rounding
+            moving_avg <= (sum + (WINDOW/2)) / WINDOW;
+        end
+    end
+endmodule
+```
+- Enhanced integer approach with rounding
+- Minimal resource overhead
+- Improved accuracy over basic integer
+- Simple implementation
+- Good balance of precision and complexity
+
+**For Precision-Critical Applications**:
+```verilog
+// Fixed-point implementation with configurable precision
+module fixed_point_ma #(
+    parameter WINDOW = 20,
+    parameter DW = 16,
+    parameter FRAC_BITS = 16
+)(
+    // Ports...
+);
+    // Fixed-point registers
+    reg [DW+FRAC_BITS-1:0] sum = 0;
+    
+    // Constants
+    localparam [31:0] FIXED_ONE = 1 << FRAC_BITS;
+    
+    always @(posedge clk) begin
+        if (start) begin
+            // Update sum with scaled prices
+            sum <= sum + (new_price << FRAC_BITS) - (oldest_price << FRAC_BITS);
+            
+            // Division with proper scaling
+            moving_avg <= sum / WINDOW;
+        end
+    end
+endmodule
+```
+- Full fixed-point implementation
+- Configurable precision
+- Higher resource utilization
+- More complex implementation
+- Maximum accuracy for critical applications
+
+**Hybrid Approach for Resource Efficiency**:
+```verilog
+// Hybrid approach with fixed-point for critical operations
+module hybrid_ma_rsi #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Integer accumulator
+    reg [63:0] sum = 0;
+    
+    // Fixed-point for critical calculations
+    reg [15:0] rsi_gain_ratio;  // 8.8 fixed-point
+    
+    always @(posedge clk) begin
+        if (start) begin
+            // Integer MA calculation
+            sum <= sum + new_price - oldest_price;
+            moving_avg <= sum / WINDOW;
+            
+            // Fixed-point RSI calculation
+            if (gain_sum > 0 || loss_sum > 0) begin
+                // 8.8 fixed-point division for ratios
+                rsi_gain_ratio <= (gain_sum << 8) / (gain_sum + loss_sum);
+                rsi <= (rsi_gain_ratio * 100) >> 8;
+            end
+        end
+    end
+endmodule
+```
+- Integer for most calculations
+- Fixed-point for critical ratio calculations
+- Balanced resource utilization
+- Targeted precision where needed
+- Good compromise solution
+
+**Application-Specific Recommendations**:
+
+1. **Trend-Following Strategies**:
+   - Integer implementation often sufficient
+   - Meaningful price movements typically exceed error margin
+   - Resource-efficient implementation
+   - Higher performance potential
+   - Simplified development and verification
+
+2. **Mean-Reversion Strategies**:
+   - Fixed-point recommended for precision
+   - Critical threshold crossing detection
+   - Accurate reversal identification
+   - Worth the additional resource utilization
+   - Essential for reliable signal generation
+
+3. **Multi-Instrument Systems**:
+   - Consider hybrid approach
+   - Fixed-point for low-value instruments
+   - Integer for high-value instruments
+   - Resource-optimized implementation
+   - Balanced performance and precision
+
+4. **Low-Resource FPGAs**:
+   - Enhanced integer with rounding
+   - Wider accumulators for precision
+   - Conservative threshold design
+   - Efficient resource utilization
+   - Acceptable performance-precision balance
+
+These recommended approaches provide a range of implementation options based on specific application requirements, enabling an optimal balance between precision, resource utilization, and implementation complexity.
+
+#### Migration Strategy
+
+For systems requiring migration from integer to fixed-point arithmetic:
+
+**Step 1: Assessment and Planning**
+- Evaluate precision requirements for each calculation
+- Identify critical calculations requiring higher precision
+- Determine appropriate fixed-point format (bit allocation)
+- Establish resource budget and constraints
+- Create migration roadmap with prioritized components
+
+**Step 2: Register Width Adjustment**
+```verilog
+// Original integer implementation
+reg [63:0] sum = 0;
+reg [31:0] moving_avg = 0;
+
+// Migrated fixed-point implementation
+// Add fractional bits while maintaining integer capacity
+reg [63+FRAC_BITS-1:0] sum_fixed = 0;
+reg [31+FRAC_BITS-1:0] moving_avg_fixed = 0;
+```
+- Expand register widths to accommodate fractional bits
+- Maintain original integer capacity
+- Define clear fixed-point format constants
+- Document format in comments
+- Update all dependent signal widths
+
+**Step 3: Calculation Adaptation**
+```verilog
+// Original integer calculation
+sum <= sum + new_price - oldest_price;
+moving_avg <= sum / WINDOW;
+
+// Migrated fixed-point calculation
+sum_fixed <= sum_fixed + (new_price << FRAC_BITS) - (oldest_price << FRAC_BITS);
+moving_avg_fixed <= sum_fixed / WINDOW;  // Division preserves fractional bits
+```
+- Convert integer operations to fixed-point
+- Add scaling operations where needed
+- Ensure consistent fixed-point format throughout
+- Update division handling for fractional preservation
+- Maintain calculation structure for clarity
+
+**Step 4: Interface Management**
+```verilog
+// Input interface adaptation
+wire [DW-1:0] price_in;  // Integer external interface
+wire [DW+FRAC_BITS-1:0] price_fixed = price_in << FRAC_BITS;  // Convert to fixed-point
+
+// Output interface adaptation
+wire [DW-1:0] moving_avg_out = moving_avg_fixed >> FRAC_BITS;  // Convert to integer
+```
+- Create adapter logic for external interfaces
+- Maintain backward compatibility where needed
+- Scale inputs to fixed-point format
+- Convert outputs back to required format
+- Document interface expectations clearly
+
+**Step 5: Hybrid Implementation**
+```verilog
+// Hybrid approach during migration
+module hybrid_calculation (
+    // Ports...
+);
+    // Original integer signals
+    reg [63:0] ma_sum = 0;
+    reg [31:0] ma_result = 0;
+    
+    // New fixed-point signals
+    reg [47:0] rsi_gain_fixed = 0;  // 32.16 format
+    reg [47:0] rsi_loss_fixed = 0;  // 32.16 format
+    
+    // Mixed calculation approach
+    always @(posedge clk) begin
+        // Keep MA calculation as integer
+        ma_sum <= ma_sum + new_price - oldest_price;
+        ma_result <= ma_sum / WINDOW;
+        
+        // Convert RSI calculation to fixed-point
+        if (price > prev_price) begin
+            rsi_gain_fixed <= rsi_gain_fixed + ((price - prev_price) << FRAC_BITS);
+        end else if (price < prev_price) begin
+            rsi_loss_fixed <= rsi_loss_fixed + ((prev_price - price) << FRAC_BITS);
+        end
+        
+        // Fixed-point RSI calculation
+        if (rsi_gain_fixed + rsi_loss_fixed > 0) begin
+            rsi <= ((100 << FRAC_BITS) * rsi_gain_fixed) / 
+                  (rsi_gain_fixed + rsi_loss_fixed);
+        end
+    end
+endmodule
+```
+- Convert critical calculations first
+- Maintain integer approach for non-critical elements
+- Create clear separation between approaches
+- Document conversion boundaries
+- Progressive migration path
+
+**Step 6: Verification Strategy**
+```verilog
+// Verification module example
+module fixed_point_verification;
+    // Reference floating-point model
+    real float_sum = 0.0;
+    real float_ma = 0.0;
+    
+    // Test with identical inputs
+    initial begin
+        // Apply test vectors to both implementations
+        for (int i = 0; i < TEST_COUNT; i = i + 1) begin
+            // Update both models
+            apply_test_vector(i);
+            
+            // Compare results
+            fixed_point_error = float_ma - (fixed_point_ma / 2.0**FRAC_BITS);
+            
+            // Report differences
+            if (abs(fixed_point_error) > ERROR_THRESHOLD) begin
+                $display("Excessive error at test %d: %f", i, fixed_point_error);
+            end
+        end
+    end
+endmodule
+```
+- Develop reference floating-point model
+- Apply identical test vectors to both implementations
+- Compare results with appropriate error tolerance
+- Verify critical threshold crossing behavior
+- Document precision improvements
+
+**Step 7: Incremental Deployment**
+1. Deploy fixed-point implementation in parallel with integer
+2. Compare results in real operation
+3. Switch to fixed-point for critical components first
+4. Monitor system behavior and performance
+5. Complete migration when verified
+
+This migration strategy enables a gradual transition from integer to fixed-point arithmetic, with manageable risk and resource impact at each stage. The hybrid approach allows for targeted precision improvement in critical calculations while maintaining system stability during migration.
+
+### FIFO Implementation Tradeoffs
+#### Shift Register vs. Circular Buffer
+
+The price memory module can be implemented using two primary approaches:
+
+**Shift Register Approach**:
+```verilog
+module shift_register_fifo #(
+    parameter DEPTH = 14,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    reg [DW-1:0] data [0:DEPTH-1];
+    
+    always @(posedge clk) begin
+        if (wr_en) begin
+            // Shift all data one position
+            for (int i = DEPTH-1; i > 0; i = i - 1) begin
+                data[i] <= data[i-1];
+            end
+            
+            // Insert new data at the beginning
+            data[0] <= new_data;
+        end
+    end
+    
+    // Oldest data
+module shift_register_fifo #(
+    parameter DEPTH = 14,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    reg [DW-1:0] data [0:DEPTH-1];
+    
+    always @(posedge clk) begin
+        if (wr_en) begin
+            // Shift all data one position
+            for (int i = DEPTH-1; i > 0; i = i - 1) begin
+                data[i] <= data[i-1];
+            end
+            
+            // Insert new data at the beginning
+            data[0] <= new_data;
+        end
+    end
+    
+    // Oldest data always at the end
+    assign oldest_data = data[DEPTH-1];
+    
+    // Full when enough writes have occurred
+    assign full = (count == DEPTH);
+endmodule
+```
+
+Key characteristics:
+- Physical movement of data through the array
+- Newest data at index 0, oldest at index DEPTH-1
+- Fixed access pattern for oldest/newest
+- O(n) complexity for data insertion
+- No pointer management required
+
+**Circular Buffer Approach**:
+```verilog
+module circular_buffer_fifo #(
+    parameter DEPTH = 14,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    reg [DW-1:0] data [0:DEPTH-1];
+    reg [4:0] write_ptr = 0;
+    reg [4:0] read_ptr = 0;
+    reg [5:0] count = 0;
+    
+    always @(posedge clk) begin
+        if (wr_en) begin
+            // Write to current position
+            data[write_ptr] <= new_data;
+            
+            // Update write pointer
+            write_ptr <= (write_ptr + 1) % DEPTH;
+            
+            // Update count and read pointer
+            if (count < DEPTH) begin
+                count <= count + 1;
+            end else begin
+                read_ptr <= (read_ptr + 1) % DEPTH;
+            end
+        end
+    end
+    
+    // Oldest data at read pointer
+    assign oldest_data = data[read_ptr];
+    
+    // Full when count reaches capacity
+    assign full = (count == DEPTH);
+endmodule
+```
+
+Key characteristics:
+- Data remains stationary in memory
+- Pointers move to track newest/oldest positions
+- Dynamic access pattern through pointers
+- O(1) complexity for data insertion
+- Requires pointer management
+
+**Comparison Analysis**:
+
+| Aspect | Shift Register | Circular Buffer |
+|--------|----------------|-----------------|
+| Data Movement | Physical shift | Logical movement via pointers |
+| Write Operation Complexity | O(n) - n shifts per write | O(1) - single write |
+| Logic Utilization | Higher (shifting logic) | Lower (pointer update only) |
+| Memory Access | Fixed pattern | Pointer-based |
+| Scaling with Depth | Poor - complexity increases | Excellent - constant regardless of depth |
+| Implementation Simplicity | Higher - no pointers | Lower - pointer management |
+| Resource Efficiency | Lower | Higher |
+| Timing Characteristics | Multiple register transfers | Single memory operation |
+
+The current price memory implementation uses the circular buffer approach due to its superior efficiency, particularly for larger buffer depths typical in technical analysis applications.
+
+#### Scaling Characteristics
+
+The scaling behavior of FIFO implementations is critical for supporting various window sizes:
+
+**Shift Register Scaling**:
+
+- **Resource Scaling**:
+  - Register usage scales linearly with depth: O(n)
+  - Shifting logic complexity scales linearly: O(n)
+  - Fan-out increases with depth
+  - Timing path length increases with depth
+  - Significant performance degradation at larger sizes
+
+- **Performance Impact**:
+  - Maximum clock frequency decreases with depth
+  - Write operation latency increases linearly
+  - Read access remains constant (fixed position)
+  - Critical path through shifting logic
+  - Practical limit around 16-32 elements
+
+- **Depth Adaptation Example**:
+  ```verilog
+  // Changing depth requires adjusting the entire shift chain
+  parameter DEPTH = 50;  // Significantly increased depth
+  
+  // Implementation complexity increases proportionally
+  for (int i = DEPTH-1; i > 0; i = i - 1) begin
+      data[i] <= data[i-1];  // 49 shift operations per write
+  end
+  ```
+
+**Circular Buffer Scaling**:
+
+- **Resource Scaling**:
+  - Register usage scales linearly with depth: O(n)
+  - Control logic remains constant: O(1)
+  - Pointer width scales logarithmically: O(log n)
+  - Timing characteristics independent of depth
+  - Consistent performance across size ranges
+
+- **Performance Impact**:
+  - Maximum clock frequency stable with depth
+  - Write operation latency constant
+  - Read access latency constant
+  - Critical path through pointer arithmetic
+  - Practical implementation for 1000+ elements
+
+- **Depth Adaptation Example**:
+  ```verilog
+  // Changing depth only requires pointer width adjustment
+  parameter DEPTH = 50;  // Significantly increased depth
+  reg [5:0] write_ptr;  // Only pointer width changes
+  reg [5:0] read_ptr;   // Only pointer width changes
+  
+  // Implementation complexity remains constant
+  write_ptr <= (write_ptr + 1) % DEPTH;  // Single operation regardless of depth
+  ```
+
+**Window Size Flexibility**:
+- **Shift Register Approach**:
+  - Window size fixed at design time
+  - Changing window requires re-synthesis
+  - Performance decreases with larger windows
+  - Resource utilization increases with window size
+  - Not practical for runtime configuration
+
+- **Circular Buffer Approach**:
+  - Window size configurable within buffer capacity
+  - Dynamic window adjustment possible
+  - Performance consistent across window sizes
+  - Resource utilization scales efficiently
+  - Supports runtime configuration options
+
+The circular buffer's superior scaling characteristics make it the preferred choice for technical indicators with varying window requirements, particularly for larger window sizes typical in financial analysis.
+
+#### Memory Resource Utilization
+
+The memory resource utilization differs significantly between FIFO implementation approaches:
+
+**Shift Register Memory Usage**:
+
+- **Memory Implementation**:
+  - Typically synthesized to register array
+  - Each element requires a unique register
+  - Routing complexity between registers
+  - Difficult to map to block RAM
+  - Distributed across FPGA fabric
+
+- **FPGA Resource Types**:
+  - Primary usage: Flip-flops
+  - Secondary usage: Routing resources
+  - LUT usage for shift control
+  - Higher overall fabric utilization
+  - Competes with computational resources
+
+- **Utilization Metrics** (20-element FIFO, 16-bit width):
+  - Register count: ~320 flip-flops
+  - LUT count: ~100 for control
+  - Routing resources: High
+  - Block RAM: Not utilized
+  - DSP blocks: Not utilized
+
+**Circular Buffer Memory Usage**:
+
+- **Memory Implementation**:
+  - Can be synthesized to register array or memory blocks
+  - Sequential addressing pattern
+  - Efficient mapping to block RAM
+  - Consolidated memory structure
+  - Optimized placement possible
+
+- **FPGA Resource Types**:
+  - Small buffers: Register arrays
+  - Larger buffers: Block RAM resources
+  - Minimal LUT usage for pointer control
+  - Reduced routing complexity
+  - Separated from computational resources
+
+- **Utilization Metrics** (20-element FIFO, 16-bit width):
+  - Register count: 320 for data + ~20 for control
+  - LUT count: ~30 for pointer management
+  - Routing resources: Low to moderate
+  - Block RAM: Potential utilization for larger sizes
+  - DSP blocks: Not utilized
+
+**FPGA-Specific Optimizations**:
+
+- **Small Buffer Implementations**:
+  - Both approaches use similar register resources
+  - Shift register may use SRL16E/SRL32E primitives
+  - Circular buffer uses standard registers
+  - Specialized shift register primitives available
+  - Size-dependent optimization opportunities
+
+- **Large Buffer Implementations**:
+  - Shift register poorly suited for large sizes
+  - Circular buffer efficiently maps to block RAM
+  - Memory inference patterns recognized by tools
+  - Significant resource advantage for circular buffer
+  - Critical for larger indicator windows (50+ elements)
+
+- **Tool-Based Optimization**:
+  ```verilog
+  // Synthesis attributes for memory inference
+  (* ram_style = "block" *) reg [DW-1:0] data [0:DEPTH-1];
+  
+  // Or for distributed memory
+  (* ram_style = "distributed" *) reg [DW-1:0] data [0:DEPTH-1];
+  ```
+  - Explicit memory type control
+  - Optimization guidance for tools
+  - Resource allocation control
+  - Performance tuning capability
+  - Implementation flexibility
+
+The circular buffer approach generally offers more efficient memory resource utilization, particularly for larger buffer sizes, and provides better mapping to dedicated FPGA memory resources like block RAM.
+
+#### Access Pattern Efficiency
+
+The efficiency of memory access patterns significantly impacts overall system performance:
+
+**Shift Register Access Patterns**:
+
+- **Write Access**:
+  - Cascaded shifts through entire array
+  - Multiple register transfers per write
+  - Write to fixed position (index 0)
+  - Distributed operation across array
+  - Significant routing resources
+
+- **Read Access**:
+  - Fixed position access (index DEPTH-1)
+  - Direct connection to output
+  - Zero access latency
+  - Consistent timing
+  - Simple routing path
+
+- **Access Timing**:
+  ```
+  Write operation timing (cascaded):
+  data[0] <= new_data;           // Cycle 1
+  data[1] <= data[0];            // Cycle 1
+  data[2] <= data[1];            // Cycle 1
+  ...
+  data[DEPTH-1] <= data[DEPTH-2]; // Cycle 1
+  ```
+  - Single cycle for complete shift
+  - Parallel register transfers
+  - Dependent on register-to-register paths
+  - Critical path through entire chain
+  - Clock frequency limited by shift path
+
+**Circular Buffer Access Patterns**:
+
+- **Write Access**:
+  - Single memory write to pointer location
+  - Independent of buffer content
+  - Write to dynamic position (write_ptr)
+  - Localized operation
+  - Efficient routing
+
+- **Read Access**:
+  - Indexed access to dynamic position (read_ptr)
+  - Multiplexed output path
+  - Memory read operation
+  - Potential for higher latency
+  - More complex routing
+
+- **Access Timing**:
+  ```
+  Write operation timing (direct):
+  data[write_ptr] <= new_data;     // Cycle 1
+  write_ptr <= (write_ptr + 1) % DEPTH; // Cycle 1
+  ```
+  - Single cycle for complete write
+  - Single memory operation
+  - Independent of buffer size
+  - Critical path through address calculation
+  - Stable clock frequency with size
+
+**Performance Impact Analysis**:
+
+| Access Aspect | Shift Register | Circular Buffer |
+|---------------|----------------|-----------------|
+| Write Operation | Multiple transfers | Single memory write |
+| Critical Path | Through entire shift chain | Through pointer arithmetic |
+| Size Scaling | Performance degrades | Performance stable |
+| Clock Frequency | Decreases with size | Stable with size |
+| Routing Complexity | High, distributed | Moderate, localized |
+| Concurrent Access | Limited by shift operations | Concurrent read/write possible |
+| Memory Technology | Limited to registers | Compatible with block RAM |
+
+**Real-World Access Scenarios**:
+
+- **Sequential Updates (Technical Analysis)**:
+  - New price arrives every market tick
+  - Regular update pattern
+  - Predictable access timing
+  - Circular buffer significantly more efficient
+  - Advantage increases with window size
+
+- **Random Access Requirements**:
+  - Circular buffer provides indexed access capability
+  - Shift register limited to ends of chain
+  - Additional index tracking possible with circular buffer
+  - More flexible data access patterns
+  - Better support for complex algorithms
+
+The circular buffer implementation offers superior access pattern efficiency, particularly for the sequential update patterns typical in technical analysis applications, with significant performance advantages for larger window sizes.
+
+#### Implementation Complexity Comparison
+
+The implementation complexity differs between the two FIFO approaches:
+
+**Shift Register Implementation**:
+
+```verilog
+module shift_register_fifo #(
+    parameter DEPTH = 14,
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire wr_en,
+    input wire [DW-1:0] new_data,
+    output wire [DW-1:0] oldest_data,
+    output wire full,
+    output wire [4:0] count
+);
+    // Data storage
+    reg [DW-1:0] data [0:DEPTH-1];
+    reg [4:0] write_count = 0;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset logic
+            for (int i = 0; i < DEPTH; i = i + 1) begin
+                data[i] <= 0;
+            end
+            write_count <= 0;
+        end else if (wr_en) begin
+            // Shift all data one position
+            for (int i = DEPTH-1; i > 0; i = i - 1) begin
+                data[i] <= data[i-1];
+            end
+            
+            // Insert new data
+            data[0] <= new_data;
+            
+            // Update count
+            if (write_count < DEPTH)
+                write_count <= write_count + 1;
+        end
+    end
+    
+    // Output connections
+    assign oldest_data = data[DEPTH-1];
+    assign full = (write_count == DEPTH);
+    assign count = write_count;
+endmodule
+```
+
+**Circular Buffer Implementation**:
+
+```verilog
+module circular_buffer_fifo #(
+    parameter DEPTH = 14,
+    parameter DW = 16
+)(
+    input wire clk,
+    input wire rst,
+    input wire wr_en,
+    input wire [DW-1:0] new_data,
+    output wire [DW-1:0] oldest_data,
+    output wire full,
+    output wire [4:0] count
+);
+    // Data storage
+    reg [DW-1:0] data [0:DEPTH-1];
+    reg [4:0] write_ptr = 0;
+    reg [4:0] read_ptr = 0;
+    reg [5:0] item_count = 0;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset logic
+            write_ptr <= 0;
+            read_ptr <= 0;
+            item_count <= 0;
+        end else if (wr_en) begin
+            // Store new data
+            data[write_ptr] <= new_data;
+            
+            // Update pointers and count
+            write_ptr <= (write_ptr + 1) % DEPTH;
+            
+            if (item_count < DEPTH) begin
+                item_count <= item_count + 1;
+            end else begin
+                read_ptr <= (read_ptr + 1) % DEPTH;
+            end
+        end
+    end
+    
+    // Output connections
+    assign oldest_data = data[read_ptr];
+    assign full = (item_count == DEPTH);
+    assign count = item_count;
+endmodule
+```
+
+**Complexity Comparison**:
+
+| Complexity Aspect | Shift Register | Circular Buffer |
+|-------------------|----------------|-----------------|
+| Line Count | ~30 lines | ~40 lines |
+| State Variables | 1 counter | 3 counters/pointers |
+| Logic Complexity | Simple shift | Pointer arithmetic |
+| Reset Logic | Array initialization | Pointer resets |
+| Conceptual Model | Physical movement | Logical movement |
+| Debugging Ease | Visually traceable | Pointer tracking needed |
+| Reasoning Complexity | Lower | Higher |
+| Error Susceptibility | Lower | Higher (pointer bugs) |
+| Implementation Effort | Lower | Moderate |
+
+**Common Implementation Challenges**:
+
+1. **Shift Register Challenges**:
+   - Loop unrolling in synthesis
+   - Efficient register chaining
+   - Reset behavior with large arrays
+   - Tool-specific optimization
+   - Performance with large depths
+
+2. **Circular Buffer Challenges**:
+   - Pointer wraparound logic
+   - Empty/full condition detection
+   - Read/write pointer synchronization
+   - Modulo arithmetic implementation
+   - Reset state consistency
+
+**Development Considerations**:
+
+- **Code Maintainability**:
+  - Shift register: Simpler concept, easier to understand
+  - Circular buffer: More complex, requires careful documentation
+  - Shift register: Fewer state variables to track
+  - Circular buffer: More error-prone pointer management
+  - Trade-off between simplicity and efficiency
+
+- **Verification Effort**:
+  - Shift register: Fewer corner cases
+  - Circular buffer: More pointer conditions to verify
+  - Shift register: Easier visual inspection
+  - Circular buffer: Requires more thorough testing
+  - Both benefit from formal verification
+
+The shift register offers implementation simplicity advantages at the cost of performance and scalability, while the circular buffer provides superior performance and resource efficiency with increased implementation complexity.
+
+#### Selection Guidelines
+
+To select the appropriate FIFO implementation for a specific application, consider the following guidelines:
+
+**Use Shift Register When**:
+- Buffer depth is small (≤16 elements)
+- Implementation simplicity is prioritized
+- Performance is not critical
+- Resource efficiency is secondary
+- Window size is fixed and small
+- Debugging visibility is important
+- Development time is limited
+
+**Use Circular Buffer When**:
+- Buffer depth is moderate to large (>16 elements)
+- Performance is a priority
+- Resource efficiency is important
+- Window size may vary or is large
+- Scaling to larger sizes may be required
+- Block RAM utilization is desired
+- Implementation complexity is acceptable
+
+**Application-Specific Selection Matrix**:
+
+| Application Characteristic | Recommended Approach |
+|----------------------------|----------------------|
+| Small MA window (5-10) | Shift Register |
+| Large MA window (50+) | Circular Buffer |
+| RSI calculation (14+) | Circular Buffer |
+| Multiple indicators | Circular Buffer |
+| Resource-constrained FPGA | Circular Buffer |
+| Simple prototype | Shift Register |
+| Variable window experimentation | Circular Buffer |
+| High-frequency trading | Circular Buffer |
+| Educational implementation | Shift Register |
+| Production system | Circular Buffer |
+
+**Hybrid Approaches**:
+```verilog
+module hybrid_fifo #(
+    parameter DEPTH = 14,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Small shift register for newest data (fast access)
+    reg [DW-1:0] newest_data [0:3];
+    
+    // Circular buffer for older data (efficient storage)
+    reg [DW-1:0] older_data [0:DEPTH-5];
+    reg [4:0] write_ptr = 0;
+    reg [4:0] read_ptr = 0;
+    
+    // Combined approach
+    always @(posedge clk) begin
+        if (wr_en) begin
+            // Shift newest data
+            newest_data[3] <= newest_data[2];
+            newest_data[2] <= newest_data[1];
+            newest_data[1] <= newest_data[0];
+            newest_data[0] <= new_data;
+            
+            // Write oldest of newest to circular buffer
+            older_data[write_ptr] <= newest_data[3];
+            write_ptr <= (write_ptr + 1) % (DEPTH-4);
+            
+            // Update read pointer when full
+            if (count >= DEPTH)
+                read_ptr <= (read_ptr + 1) % (DEPTH-4);
+        end
+    end
+    
+    // Output oldest data
+    assign oldest_data = older_data[read_ptr];
+endmodule
+```
+
+This hybrid approach combines the simplicity of a small shift register for newest data with the efficiency of a circular buffer for the majority of the history, providing optimized access patterns for both newest and oldest data.
+
+**Migration Considerations**:
+- Start with simplest appropriate implementation
+- Profile performance and resource utilization
+- Identify bottlenecks and constraints
+- Consider hybrid approaches for specific access patterns
+- Refactor to more efficient implementation if needed
+- Maintain clear interface compatibility
+- Document implementation details
+
+The price memory module in the current technical analysis system uses the circular buffer approach due to its superior performance, efficiency, and scalability characteristics, which are essential for financial applications with potentially large window sizes and performance requirements.
+
+### Calculation Timing Tradeoffs
+
+#### Deterministic vs. Variable Latency
+
+The technical analysis system faces tradeoffs between deterministic and variable calculation timing:
+
+**Deterministic Latency Approach**:
+
+```verilog
+// Moving Average with fixed cycle count
+module fixed_latency_ma #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // State machine with fixed cycle count
+    localparam IDLE = 0, CALC = 1, DONE = 2;
+    reg [1:0] state = IDLE;
+    reg [5:0] cycle_count = 0;
+    
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (start) begin
+                    state <= CALC;
+                    cycle_count <= 0;
+                    // Initialize calculation
+                    sum <= sum + new_price - oldest_price;
+                end
+            end
+            
+            CALC: begin
+                // Always take exactly 4 cycles for consistency
+                if (cycle_count < 3) begin
+                    cycle_count <= cycle_count + 1;
+                    // Calculation complete in first cycle, just wait
+                end else begin
+                    state <= DONE;
+                    moving_avg <= sum / WINDOW;
+                end
+            end
+            
+            DONE: begin
+                done <= 1;
+                state <= IDLE;
+            end
+        endcase
+    end
+endmodule
+```
+
+Key characteristics:
+- Fixed number of clock cycles regardless of data
+- Predictable completion timing
+- Consistent latency for all calculations
+- Simplified system synchronization
+- Potentially wasted cycles
+
+**Variable Latency Approach**:
+
+```verilog
+// RSI with data-dependent cycle count
+module variable_latency_rsi #(
+    parameter WINDOW = 14,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // State machine with variable progression
+    localparam IDLE = 0, ACCUMULATE = 1, DIVIDE = 2, DONE = 3;
+    reg [1:0] state = IDLE;
+    
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (start)
+                    state <= ACCUMULATE;
+            end
+            
+            ACCUMULATE: begin
+                // Process until all data examined
+                if (sample_count < WINDOW) begin
+                    // Process next sample
+                    sample_count <= sample_count + 1;
+                    // Update gain/loss accumulators
+                    // ...
+                end else begin
+                    state <= DIVIDE;
+                }
+            end
+            
+            DIVIDE: begin
+                // Perform division operation
+                if (loss_sum > 0)
+                    rsi <= (100 * gain_sum) / (gain_sum + loss_sum);
+                else
+                    rsi <= 100;  // All gains
+                
+                state <= DONE;
+            end
+            
+            DONE: begin
+                done <= 1;
+                state <= IDLE;
+            end
+        endcase
+    end
+endmodule
+```
+
+Key characteristics:
+- Variable cycle count based on data conditions
+- Optimized execution time
+- Efficient resource utilization
+- More complex system synchronization
+- Data-dependent completion timing
+
+**Timing Analysis Comparison**:
+
+| Aspect | Deterministic Latency | Variable Latency |
+|--------|----------------------|------------------|
+| Cycle Count | Fixed (4 cycles example) | Data-dependent (1-20+ cycles) |
+| Completion Timing | Predictable | Varies with data |
+| Resource Efficiency | Lower (may waste cycles) | Higher (optimized execution) |
+| System Integration | Simpler | More complex |
+| Performance | Consistent but potentially slower | Optimized but variable |
+| Implementation Complexity | Lower | Higher |
+
+**System Integration Implications**:
+
+- **Deterministic Approach**:
+  - Simplifies downstream component timing
+  - Enables fixed pipeline stage design
+  - Consistent system throughput
+  - Predictable system behavior
+  - Easier verification and validation
+
+- **Variable Approach**:
+  - Requires handshaking protocols
+  - Needs completion signaling
+  - May create timing bubbles in pipeline
+  - More complex verification
+  - Potentially higher overall throughput
+
+The technical analysis system balances these approaches by implementing predominantly deterministic calculations with clear completion signaling, ensuring reliable operation while maintaining reasonable performance.
+
+#### Resource Implications
+
+The choice between deterministic and variable latency approaches has significant resource implications:
+
+**Deterministic Timing Resources**:
+
+- **State Machine Complexity**:
+  - Simpler structure with fixed states
+  - Predetermined state transitions
+  - Fixed cycle counters
+  - Minimal conditional logic
+  - Smaller state encoding
+
+- **Buffering Requirements**:
+  - Input data remains stable
+  - No intermediate result buffering
+  - Simplified data path
+  - Reduced register count
+  - Fixed storage allocation
+
+- **Control Logic**:
+  - Fixed timing control
+  - Simple counter-based progression
+  - Predictable state duration
+  - Minimal conditional branches
+  - Efficient synthesis to hardware
+
+- **Resource Utilization Example**:
+  ```verilog
+  // Fixed 4-cycle implementation
+  reg [1:0] state;          // 2-bit state register
+  reg [1:0] cycle_counter;  // 2-bit counter (0-3)
+  // Total: 4 flip-flops for control
+  ```
+
+**Variable Timing Resources**:
+
+- **State Machine Complexity**:
+  - More complex with conditional progression
+  - Data-dependent transitions
+  - Variable iteration counts
+  - Multiple conditional paths
+  - Larger state encoding
+
+- **Buffering Requirements**:
+  - Interim result storage
+  - Pipeline stage buffers
+  - Multiple data registers
+  - Complex data flow management
+  - Dynamic storage allocation
+
+- **Control Logic**:
+  - Conditional timing control
+  - Complex progression criteria
+  - Variable state duration
+  - Multiple branch conditions
+  - More complex hardware structure
+
+- **Resource Utilization Example**:
+  ```verilog
+  // Variable-cycle implementation
+  reg [2:0] state;          // 3-bit state register
+  reg [4:0] sample_counter; // 5-bit counter (0-31)
+  reg data_valid;           // Valid flag
+  reg calc_complete;        // Completion flag
+  // Total: 10+ flip-flops for control
+  ```
+
+**Specific Resource Impacts**:
+
+1. **Register Utilization**:
+   - Deterministic: Lower, fixed allocation
+   - Variable: Higher, data-dependent allocation
+   - Deterministic: Simpler control registers
+   - Variable: More state tracking registers
+   - Difference can be significant for complex operations
+
+2. **LUT Utilization**:
+   - Deterministic: Lower, simpler logic paths
+   - Variable: Higher, conditional evaluation
+   - Deterministic: Regular structure
+   - Variable: Irregular, branch-heavy logic
+   - Impact scales with calculation complexity
+
+3. **Memory Utilization**:
+   - Deterministic: Predictable access patterns
+   - Variable: Irregular access patterns
+   - Deterministic: Simplified memory control
+   - Variable: Complex addressing and timing
+   - Affects memory inference and optimization
+
+4. **FPGA-Specific Resource Impact**:
+   - DSP usage typically similar for either approach
+   - Block RAM utilization may differ with buffering needs
+   - Routing complexity typically higher for variable approach
+   - Timing closure more challenging with variable approach
+   - Resource sharing opportunities differ between approaches
+
+The resource implications of timing approach selection extend beyond simple component count to affect overall system architecture, scalability, and implementation efficiency.
+
+#### Throughput Impact Analysis
+
+The calculation timing approach significantly affects system throughput:
+
+**Deterministic Timing Throughput**:
+
+- **Calculation Rate**:
+  - Fixed cycles per calculation
+  - Example: 4 cycles per MA update
+  - Predictable completion timing
+  - Constant processing rate
+  - Throughput = Clock Frequency / Fixed Cycle Count
+
+- **Pipelining Potential**:
+  - Regular stage timing
+  - Balanced pipeline design
+  - Fixed stage latency
+  - Predictable throughput
+  - Efficient resource utilization
+
+- **Parallel Processing**:
+  - Synchronized calculation units
+  - Coordinated completion
+  - Simplified result combining
+  - Predictable system behavior
+  - Efficient scaling
+
+- **Throughput Calculation Example**:
+  ```
+  System clock: 100 MHz
+  MA calculation: 4 cycles fixed
+  RSI calculation: 4 cycles fixed
+  
+  MA throughput: 100 MHz / 4 = 25 million calculations per second
+  RSI throughput: 100 MHz / 4 = 25 million calculations per second
+  System throughput: 25 million updates per second
+  ```
+
+**Variable Timing Throughput**:
+
+- **Calculation Rate**:
+  - Data-dependent cycle count
+  - Example: 1-20 cycles per RSI update
+  - Varying completion timing
+  - Fluctuating processing rate
+  - Throughput = Clock Frequency / Average Cycle Count
+
+- **Pipelining Challenges**:
+  - Irregular stage timing
+  - Pipeline bubbles
+  - Variable stage latency
+  - Fluctuating throughput
+  - Complex resource management
+
+- **Parallel Processing**:
+  - Asynchronous calculation units
+  - Independent completion
+  - Complex result combining
+  - Less predictable system behavior
+  - Challenging scaling
+
+- **Throughput Calculation Example**:
+  ```
+  System clock: 100 MHz
+  MA calculation: 1-2 cycles variable
+  RSI calculation: 2-20 cycles variable
+  
+  MA throughput: 100 MHz / 1.5 avg = 66.7 million calculations per second
+  RSI throughput: 100 MHz / 10 avg = 10 million calculations per second
+  System throughput: 10 million updates per second (limited by slowest component)
+  ```
+
+**Throughput Optimization Techniques**:
+
+1. **Hybrid Timing Approach**:
+   ```verilog
+   // Variable computation with deterministic interface
+   module hybrid_timing_ma (
+       // Ports...
+   );
+       reg [1:0] state = IDLE;
+       reg computation_done = 0;
+       
+       always @(posedge clk) begin
+           case (state)
+               IDLE: begin
+                   if (start) begin
+                       // Start variable-time calculation
+                       start_calculation <= 1;
+                       state <= CALC;
+                   end
+               end
+               
+               CALC: begin
+                   // Wait for calculation completion
+                   if (computation_done) begin
+                       // Always complete in exactly 4 cycles
+                       if (cycle_count == 3) begin
+                           state <= DONE;
+                       end else begin
+                           cycle_count <= cycle_count + 1;
+                       end
+                   end
+               end
+               
+               DONE: begin
+                   done <= 1;
+                   state <= IDLE;
+               end
+           endcase
+       end
+       
+       // Variable-time calculation core
+       always @(posedge clk) begin
+           if (start_calculation) begin
+               // Perform calculation (completes in variable time)
+               sum <= sum + new_price - oldest_price;
+               result <= sum / WINDOW;
+               computation_done <= 1;
+           end else begin
+               computation_done <= 0;
+           end
+       end
+   endmodule
+   ```
+   - Variable internal computation
+   - Deterministic external interface
+   - Balanced performance and predictability
+   - Simplified system integration
+   - Efficient resource utilization
+
+2. **Pipelined Calculation**:
+   ```verilog
+   // Pipelined MA calculation
+   module pipelined_ma (
+       // Ports...
+   );
+       // Pipeline stages
+       reg [63:0] sum_stage1;
+       reg [31:0] div_stage2;
+       reg valid_stage1, valid_stage2;
+       
+       // Pipeline stage 1: Addition
+       always @(posedge clk) begin
+           if (new_data_valid) begin
+               sum_stage1 <= sum + new_price - oldest_price;
+               valid_stage1 <= 1;
+           end else begin
+               valid_stage1 <= 0;
+           end
+       end
+       
+       // Pipeline stage 2: Division
+       always @(posedge clk) begin
+           if (valid_stage1) begin
+               div_stage2 <= sum_stage1 / WINDOW;
+               valid_stage2 <= 1;
+           end else begin
+               valid_stage2 <= 0;
+           end
+       end
+       
+       // Output stage
+       always @(posedge clk) begin
+           if (valid_stage2) begin
+               moving_avg <= div_stage2;
+               done <= 1;
+           end else begin
+               done <= 0;
+           end
+       end
+   endmodule
+   ```
+   - Continuous calculation flow
+   - One result per clock cycle when pipelined
+   - Maximized throughput
+   - Increased latency
+   - Higher resource utilization
+
+The throughput impact analysis demonstrates that while variable timing may provide better average-case performance, deterministic timing often delivers more reliable system throughput, particularly in pipelined or parallel processing environments.
+
+#### Design Simplicity Considerations
+
+Design simplicity represents an important consideration in the timing approach selection:
+
+**Deterministic Timing Simplicity**:
+
+- **State Machine Structure**:
+  ```verilog
+  // Simple state machine with fixed transitions
+  always @(posedge clk) begin
+      case (state)
+          IDLE: if (start) state <= CALC;
+          CALC: state <= DONE;
+          DONE: state <= IDLE;
+      endcase
+  end
+  ```
+  - Linear state progression
+  - Minimal conditional branches
+  - Simple transition logic
+  - Predictable execution flow
+  - Straightforward implementation
+
+- **Control Logic**:
+  - Fixed operation sequencing
+  - Predetermined cycle counts
+  - Simple counter-based control
+  - Minimal condition checking
+  - Clear operational boundaries
+
+- **Debugging and Verification**:
+  - Predictable signal timing
+  - Consistent waveform patterns
+  - Easy cycle counting
+  - Simpler test vector generation
+  - More straightforward coverage analysis
+
+- **Documentation Requirements**:
+  - Fixed timing specifications
+  - Simple interface description
+  - Consistent operational description
+  - Clear latency definition
+  - Minimal timing dependencies
+
+**Variable Timing Complexity**:
+
+- **State Machine Structure**:
+  ```verilog
+  // Complex state machine with data-dependent transitions
+  always @(posedge clk) begin
+      case (state)
+          IDLE: if (start) state <= PROCESS;
+          PROCESS: begin
+              if (sample_count < WINDOW && !fifo_empty) begin
+                  // Continue processing
+                  sample_count <= sample_count + 1;
+              end else if (sample_count >= WINDOW) begin
+                  state <= CALCULATE;
+              end else begin
+                  // Wait for more data
+              end
+          end
+          CALCULATE: state <= DONE;
+          DONE: state <= IDLE;
+      endcase
+  end
+  ```
+  - Branching state progression
+  - Multiple conditional paths
+  - Complex transition logic
+  - Data-dependent execution flow
+  - More involved implementation
+
+- **Control Logic**:
+  - Complex operation sequencing
+  - Data-dependent termination
+  - Multiple condition checks
+  - Extensive flag management
+  - Overlapping operational phases
+
+- **Debugging and Verification**:
+  - Variable signal timing
+  - Inconsistent waveform patterns
+  - Complex execution tracing
+  - Data-dependent test vectors
+  - More challenging coverage analysis
+
+- **Documentation Requirements**:
+  - Min/max/average timing specifications
+  - Complex interface protocol description
+  - Conditional operation documentation
+  - Variable latency explanation
+  - Extensive timing dependencies
+
+**Design Complexity Metrics**:
+
+| Complexity Metric | Deterministic Timing | Variable Timing |
+|-------------------|---------------------|-----------------|
+| State Count | Lower | Higher |
+| Transition Conditions | Fewer, simpler | More, complex |
+| Control Signals | Fewer | More |
+| Flag Registers | Fewer | More |
+| Code Lines | Fewer | More |
+| Branch Complexity | Lower | Higher |
+| Cognitive Load | Lower | Higher |
+| Verification Effort | Lower | Higher |
+
+**Maintenance Considerations**:
+
+- **Deterministic Timing**:
+  - Easier to understand for new developers
+  - Simpler modification process
+  - Lower regression risk with changes
+  - Clearer interface contracts
+  - More straightforward performance analysis
+
+- **Variable Timing**:
+  - Higher learning curve for new developers
+  - More complex modification process
+  - Higher regression risk with changes
+  - More complex interface requirements
+  - More involved performance analysis
+
+The design simplicity advantage of deterministic timing approaches translates to lower development and maintenance costs, reduced risk, and improved project sustainability, often outweighing the potential performance benefits of variable timing for many applications.
+
+#### Application-Specific Selection Criteria
+
+Different applications have unique requirements that influence the timing approach selection:
+
+**High-Frequency Trading Applications**:
+
+- **Primary Requirements**:
+  - Lowest possible latency
+  - Deterministic response time
+  - Predictable system behavior
+  - Reliable operation
+  - Precise timing characteristics
+
+- **Recommended Approach**:
+  - Deterministic timing with minimum fixed cycles
+  - Fully pipelined implementation
+  - Fixed latency guarantees
+  - Worst-case performance optimization
+  - Clear timing boundaries
+
+- **Implementation Example**:
+  ```verilog
+  // Minimal-latency fixed-cycle implementation
+  module hft_ma_calculator (
+      // Ports...
+  );
+      // Single-cycle MA update
+      always @(posedge clk) begin
+          if (new_data) begin
+              // Update MA in exactly one cycle
+              sum <= sum + new_price - oldest_price;
+              moving_avg <= (sum + new_price - oldest_price) / WINDOW;
+              done <= 1;
+          end else begin
+              done <= 0;
+          end
+      end
+  endmodule
+  ```
+
+**Backtesting and Analysis Systems**:
+
+- **Primary Requirements**:
+  - Maximum throughput
+  - Efficient resource utilization
+  - Scalability to multiple instruments
+  - Flexible calculation options
+  - Overall system performance
+
+- **Recommended Approach**:
+  - Variable timing for maximum efficiency
+  - Optimized calculation paths
+  - Asynchronous processing
+  - Average-case optimization
+  - Resource sharing capabilities
+
+- **Implementation Example**:
+  ```verilog
+  // High-throughput variable-cycle implementation
+  module backtesting_calculator (
+      // Ports...
+  );
+      // Process multiple instruments with shared resources
+      always @(posedge clk) begin
+          case (state)
+              IDLE: begin
+                  if (!calculation_queue_empty) begin
+                      // Get next instrument from queue
+                      current_instrument <= queue_instrument;
+                      state <= CALCULATE;
+                  end
+              end
+              
+              CALCULATE: begin
+                  // Perform calculation with minimum required cycles
+                  if (calculation_complete) begin
+                      // Store result and proceed to next
+                      result_valid[current_instrument] <= 1;
+                      state <= IDLE;
+                  end
+              end
+          endcase
+      end
+  endmodule
+  ```
+
+**Multi-Strategy Trading Systems**:
+
+- **Primary Requirements**:
+  - Multiple indicator calculation
+  - Strategy combination capabilities
+  - Balanced resource utilization
+  - Reliable signal generation
+  - Manageable system complexity
+
+- **Recommended Approach**:
+  - Hybrid timing approach
+  - Critical path optimization
+  - Selective deterministic components
+  - Balanced resource allocation
+  - Clear synchronization points
+
+- **Implementation Example**:
+  ```verilog
+  // Multi-strategy system with mixed timing
+  module multi_strategy_system (
+      // Ports...
+  );
+      // Critical path: Deterministic timing
+      moving_average_fsm ma_calculator (
+          // Fixed-cycle implementation
+          // ...
+      );
+      
+      // Secondary indicators: Variable timing
+      rsi_calculator rsi_calc (
+          // Variable-cycle implementation
+          // ...
+      );
+      
+      // Synchronization at strategy decision point
+      always @(posedge clk) begin
+          if (ma_done && rsi_done) begin
+              // Generate trading signals
+              strategy_active <= 1;
+          end
+      end
+  endmodule
+  ```
+
+**Educational and Prototyping Systems**:
+
+- **Primary Requirements**:
+  - Implementation clarity
+  - Understandable operation
+  - Straightforward debugging
+  - Flexible modification
+  - Demonstration capability
+
+- **Recommended Approach**:
+  - Deterministic timing for simplicity
+  - Clear state boundaries
+  - Explicit operation phases
+  - Simple control structures
+  - Modular design
+
+- **Implementation Example**:
+  ```verilog
+  // Educational implementation with clear phases
+  module educational_ma_calculator (
+      // Ports...
+  );
+      // Clear state definitions
+      localparam IDLE = 0, READ = 1, ACCUMULATE = 2, DIVIDE = 3, DONE = 4;
+      reg [2:0] state = IDLE;
+      
+      // Explicit phased operation
+      always @(posedge clk) begin
+          case (state)
+              IDLE: if (start) state <= READ;
+              READ: begin
+                  // Read data phase
+                  oldest <= data[read_ptr];
+                  state <= ACCUMULATE;
+              end
+              ACCUMULATE: begin
+                  // Calculation phase
+                  sum <= sum + new_price - oldest;
+                  state <= DIVIDE;
+              end
+              DIVIDE: begin
+                  // Division phase
+                  result <= sum / WINDOW;
+                  state <= DONE;
+              end
+              DONE: begin
+                  // Result phase
+                  done <= 1;
+                  state <= IDLE;
+              end
+          endcase
+      end
+  endmodule
+  ```
+
+**Application-Specific Selection Matrix**:
+
+| Application Type | Timing Priority | Resource Priority | Recommended Approach |
+|------------------|-----------------|-------------------|----------------------|
+| High-Frequency Trading | Latency | Performance | Fixed minimal cycles |
+| Backtesting System | Throughput | Efficiency | Variable optimized |
+| Multi-Strategy Trading | Balance | Functionality | Hybrid approach |
+| Educational System | Clarity | Understandability | Phased deterministic |
+| Production Trading | Reliability | Maintainability | Deterministic |
+| Research Platform | Flexibility | Adaptability | Configurable hybrid |
+
+The application-specific selection criteria provide a framework for choosing the most appropriate timing approach based on the unique requirements and constraints of each trading system implementation.
+
+#### Hybrid Approach Possibilities
+
+Hybrid timing approaches combine the benefits of both deterministic and variable timing:
+
+**1. Deterministic Interface with Variable Core**:
+
+```verilog
+module hybrid_timing_calculator #(
+    parameter WINDOW = 20,
+    parameter DW = 16,
+    parameter FIXED_CYCLES = 4
+)(
+    // Ports...
+);
+    // State machine for deterministic external interface
+    reg [1:0] ext_state = 0;
+    reg [2:0] cycle_counter = 0;
+    reg calculation_started = 0;
+    reg internal_done = 0;
+    
+    // External deterministic interface
+    always @(posedge clk) begin
+        case (ext_state)
+            0: begin  // IDLE
+                if (start) begin
+                    ext_state <= 1;
+                    cycle_counter <= 0;
+                    calculation_started <= 1;
+                    done <= 0;
+                end
+            end
+            
+            1: begin  // CALCULATE
+                calculation_started <= 0;
+                
+                // Always take exactly FIXED_CYCLES cycles
+                if (cycle_counter < FIXED_CYCLES-1) begin
+                    cycle_counter <= cycle_counter + 1;
+                end else begin
+                    ext_state <= 2;
+                end
+            end
+            
+            2: begin  // DONE
+                done <= 1;
+                ext_state <= 0;
+            end
+        endcase
+    end
+    
+    // Internal variable-time calculation core
+    reg [2:0] int_state = 0;
+    
+    always @(posedge clk) begin
+        if (calculation_started) begin
+            int_state <= 1;
+            internal_done <= 0;
+        end
+        
+        case (int_state)
+            0: begin  // IDLE
+                // Wait for trigger
+            end
+            
+            1: begin  // VARIABLE CALCULATION
+                // Perform calculation in variable time
+                // ...
+                
+                // Optimized calculation path
+                sum <= sum + new_price - oldest_price;
+                
+                // When complete (variable timing)
+                int_state <= 2;
+            end
+            
+            2: begin  // FINALIZE
+                moving_avg <= sum / WINDOW;
+                internal_done <= 1;
+                int_state <= 0;
+            end
+        endcase
+    end
+endmodule
+```
+
+This approach features:
+- Deterministic external timing for system integration
+- Variable internal timing for calculation efficiency
+- Clean interface contract
+- Optimized internal implementation
+- Buffer between timing domains
+
+**2. Adaptive Cycle Allocation**:
+
+```verilog
+module adaptive_timing_calculator #(
+    parameter WINDOW = 20,
+    parameter DW = 16,
+    parameter MAX_CYCLES = 8
+)(
+    // Ports...
+);
+    // Adaptive timing control
+    reg [3:0] allocated_cycles;
+    reg [3:0] cycle_counter = 0;
+    
+    // Cycle allocation based on system load
+    always @(posedge clk) begin
+        if (system_busy) begin
+            // Reduce allocated cycles when system is busy
+            allocated_cycles <= 2;  // Minimum cycles
+        end else begin
+            // Use more cycles when system has capacity
+            allocated_cycles <= 6;  // More thorough calculation
+        end
+    end
+    
+    // State machine with adaptive timing
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (start) begin
+                    state <= CALCULATE;
+                    cycle_counter <= 0;
+                end
+            end
+            
+            CALCULATE: begin
+                // Adaptive calculation quality based on allocated cycles
+                if (cycle_counter < allocated_cycles) begin
+                    cycle_counter <= cycle_counter + 1;
+                    
+                    // Perform incremental calculation improvements
+                    case (cycle_counter)
+                        0: begin
+                            // Essential calculation (always performed)
+                            sum <= sum + new_price - oldest_price;
+                            basic_avg <= sum / WINDOW;
+                        end
+                        
+                        1, 2: begin
+                            // Enhanced precision (if cycles available)
+                            // ...
+                        end
+                        
+                        3, 4, 5: begin
+                            // Additional filtering (if cycles available)
+                            // ...
+                        end
+                    endcase
+                end else begin
+                    state <= DONE;
+                end
+            end
+            
+            DONE: begin
+                done <= 1;
+                state <= IDLE;
+            end
+        endcase
+    end
+endmodule
+```
+
+This approach enables:
+- Dynamic cycle allocation based on system conditions
+- Quality/performance tradeoff control
+- Graceful degradation under load
+- Enhanced results when resources available
+- Bounded worst-case timing
+
+**3. Parallel Processing with Result Selection**:
+
+```verilog
+module parallel_timing_calculator #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Parallel calculation paths
+    reg [31:0] fast_result;    // Quick approximation
+    reg fast_done = 0;
+    
+    reg [31:0] precise_result; // Precise calculation
+    reg precise_done = 0;
+    
+    // Fast calculation path (deterministic timing)
+    always @(posedge clk) begin
+        if (start) begin
+            // Simplified calculation (2 cycles)
+            sum <= sum + new_price - oldest_price;
+            fast_result <= sum / WINDOW;
+            fast_done <= 1;
+        end else begin
+            fast_done <= 0;
+        end
+    end
+    
+    // Precise calculation path (variable timing)
+    always @(posedge clk) begin
+        case (precise_state)
+            0: begin  // IDLE
+                if (start) begin
+                    precise_state <= 1;
+                    // Initialize precise calculation
+                end
+            end
+            
+            1: begin  // CALCULATE
+                // More complex algorithm (variable cycles)
+                // ...
+                
+                // When complete
+                precise_result <= enhanced_result;
+                precise_done <= 1;
+                precise_state <= 0;
+            end
+        endcase
+    end
+    
+    // Result selection
+    always @(posedge clk) begin
+        if (timeout || precise_done) begin
+            // Use precise result if available in time
+            moving_avg <= precise_done ? precise_result : fast_result;
+            done <= 1;
+        end else if (fast_done && !wait_for_precise) begin
+            // Use fast result if not waiting for precise
+            moving_avg <= fast_result;
+            done <= 1;
+        end else begin
+            done <= 0;
+        end
+    end
+endmodule
+```
+
+This hybrid approach provides:
+- Guaranteed result availability through fast path
+- Enhanced precision when time permits
+- Configurable precision/latency tradeoff
+- Bounded worst-case timing
+- Quality scaling with available time
+
+**4. Time-Sliced Processing**:
+
+```verilog
+module time_sliced_calculator #(
+    parameter WINDOW = 20,
+    parameter DW = 16,
+    parameter SLICE_SIZE = 4
+)(
+    // Ports...
+);
+    // Time-sliced processing state
+    reg [4:0] process_index = 0;
+    reg processing_active = 0;
+    
+    // Time-sliced calculation
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (start) begin
+                    state <= PROCESS;
+                    process_index <= 0;
+                    processing_active <= 1;
+                    // Initialize calculation
+                end
+            end
+            
+            PROCESS: begin
+                // Process data in fixed-size slices
+                if (process_index < WINDOW) begin
+                    // Process SLICE_SIZE elements per cycle
+                    for (int i = 0; i < SLICE_SIZE; i = i + 1) begin
+                        if (process_index + i < WINDOW) begin
+                            // Process element at process_index + i
+                            // ...
+                        end
+                    end
+                    
+                    // Update process index
+                    process_index <= process_index + SLICE_SIZE;
+                end else begin
+                    state <= FINALIZE;
+                end
+            end
+            
+            FINALIZE: begin
+                // Complete calculation
+                moving_avg <= sum / WINDOW;
+                state <= DONE;
+            end
+            
+            DONE: begin
+                done <= 1;
+                processing_active <= 0;
+                state <= IDLE;
+            end
+        endcase
+    end
+    
+    // External interface
+    assign busy = processing_active;
+    assign progress = (process_index * 100) / WINDOW;
+endmodule
+```
+
+This approach enables:
+- Predictable processing rate
+- Interruptible calculation
+- Progress monitoring
+- Configurable time slice size
+- Balanced system loading
+
+These hybrid approach possibilities offer flexible implementations that can be tailored to specific application requirements, combining the benefits of both deterministic and variable timing approaches while mitigating their respective drawbacks.
+
+### State Machine Complexity Tradeoffs
+
+#### Simplicity vs. Functionality
+
+State machine design involves fundamental tradeoffs between simplicity and functionality:
+
+**Simple State Machine Approach**:
+
+```verilog
+// Minimal Moving Average FSM (3 states)
+module simple_ma_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Simple 3-state machine
+    localparam IDLE = 0, CALCULATE = 1, DONE = 2;
+    reg [1:0] state = IDLE;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state <= IDLE;
+            sum <= 0;
+            moving_avg <= 0;
+            done <= 0;
+        end else begin
+            // Default signal assignments
+            done <= 0;
+            
+            case (state)
+                IDLE: begin
+                    if (start)
+                        state <= CALCULATE;
+                end
+                
+                CALCULATE: begin
+                    // Single-state calculation
+                    sum <= sum + new_price - oldest_price;
+                    moving_avg <= sum / WINDOW;
+                    state <= DONE;
+                end
+                
+                DONE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key characteristics:
+- Minimal state count (3 states)
+- Linear state progression
+- Simple transition logic
+- Limited functionality
+- Straightforward implementation
+
+**Feature-Rich State Machine Approach**:
+
+```verilog
+// Enhanced Moving Average FSM (7+ states)
+module enhanced_ma_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Enhanced port list...
+    input wire start,
+    input wire pause,
+    input wire reset_accum,
+    input wire [1:0] precision_mode,
+    output reg [1:0] status,
+    output reg error
+);
+    // Complex state machine
+    localparam IDLE = 0, CHECK = 1, INIT = 2, ACCUMULATE = 3, 
+               DIVIDE = 4, FILTER = 5, DONE = 6, ERROR = 7;
+    reg [2:0] state = IDLE;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset logic
+            state <= IDLE;
+            // ... register initialization
+        end else begin
+            // Default assignments
+            done <= 0;
+            error <= 0;
+            
+            case (state)
+                IDLE: begin
+                    if (start)
+                        state <= CHECK;
+                end
+                
+                CHECK: begin
+                    // Input validation
+                    if (new_price > MAX_VALID_PRICE || oldest_price > MAX_VALID_PRICE) begin
+                        error <= 1;
+                        state <= ERROR;
+                    end else begin
+                        state <= (reset_accum) ? INIT : ACCUMULATE;
+                    end
+                end
+                
+                INIT: begin
+                    // Reinitialize calculation
+                    sum <= new_price;
+                    count <= 1;
+                    state <= ACCUMULATE;
+                end
+                
+                ACCUMULATE: begin
+                    // Update running sum
+                    if (!pause) begin
+                        sum <= sum + new_price - oldest_price;
+                        state <= DIVIDE;
+                    end
+                end
+                
+                DIVIDE: begin
+                    // Division with precision modes
+                    case (precision_mode)
+                        0: moving_avg <= sum / WINDOW;                     // Fast
+                        1: moving_avg <= (sum + (WINDOW/2)) / WINDOW;      // Rounded
+                        2: moving_avg <= fixed_point_divide(sum, WINDOW);  // High precision
+                        3: moving_avg <= adaptive_precision_divide(sum, WINDOW); // Context-aware
+                    endcase
+                    
+                    state <= FILTER;
+                end
+                
+                FILTER: begin
+                    // Optional output filtering
+                    if (enable_filter) begin
+                        moving_avg <= apply_filter(moving_avg);
+                    end
+                    
+                    state <= DONE;
+                end
+                
+                DONE: begin
+                    done <= 1;
+                    status <= STATUS_COMPLETE;
+                    state <= IDLE;
+                end
+                
+                ERROR: begin
+                    status <= STATUS_ERROR;
+                    if (error_ack)
+                        state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key characteristics:
+- Expanded state count (8 states)
+- Complex state transitions
+- Feature-rich implementation
+- Enhanced functionality
+- Sophisticated control
+
+**Simplicity vs. Functionality Comparison**:
+
+| Aspect | Simple Approach | Feature-Rich Approach |
+|--------|-----------------|----------------------|
+| State Count | 3-4 states | 7+ states |
+| Code Size | ~30 lines | 100+ lines |
+| Features | Basic calculation | Advanced features |
+| Error Handling | Minimal/none | Comprehensive |
+| Configurability | Fixed operation | Multiple options |
+| Maintenance | Straightforward | More complex |
+| Verification | Simpler | More involved |
+| Resource Usage | Lower | Higher |
+
+**Feature Impact Analysis**:
+
+| Feature | State Impact | Complexity Impact | Benefit |
+|---------|--------------|-------------------|---------|
+| Input Validation | +1 state | Medium | Error prevention |
+| Pause/Resume | +1 state | Medium | Operational control |
+| Precision Modes | +1 state | High | Calculation quality |
+| Filtering | +1 state | Medium | Output quality |
+| Error Recovery | +1 state | High | Robustness |
+| Status Reporting | +0 states | Low | System monitoring |
+| Accumulator Reset | +1 state | Low | Manual control |
+
+The current technical analysis system balances these tradeoffs, implementing relatively simple state machines for the core indicators while providing sufficient functionality for reliable operation. This design choice prioritizes reliability and maintainability over advanced features, appropriate for the system's primary purpose of generating consistent trading signals.
+
+#### Error Handling Capabilities
+
+State machine design significantly impacts error handling capabilities:
+
+**Minimal Error Handling Approach**:
+
+```verilog
+// Simple state machine with basic error handling
+module basic_error_ma_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Simple state machine
+    localparam IDLE = 0, CALCULATE = 1, DONE = 2;
+    reg [1:0] state = IDLE;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset handling
+            state <= IDLE;
+            sum <= 0;
+            moving_avg <= 0;
+            done <= 0;
+            // No error handling
+        end else begin
+            case (state)
+                IDLE: begin
+                    if (start)
+                        state <= CALCULATE;
+                end
+                
+                CALCULATE: begin
+                    // Basic calculation without error checking
+                    sum <= sum + new_price - oldest_price;
+                    moving_avg <= sum / WINDOW;
+                    state <= DONE;
+                end
+                
+                DONE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key limitations:
+- No input validation
+- No overflow detection
+- No error reporting
+- No recovery mechanisms
+- Reset as only error response
+
+**Comprehensive Error Handling Approach**:
+
+```verilog
+// Enhanced state machine with robust error handling
+module robust_error_ma_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16,
+    parameter MAX_VALID_PRICE = 16'hFF00
+)(
+    // Extended ports...
+    input wire start,
+    input wire [DW-1:0] new_price,
+    input wire [DW-1:0] oldest_price,
+    output reg [31:0] moving_avg,
+    output reg done,
+    output reg [2:0] error_code,
+    output reg error_active,
+    input wire error_ack
+);
+    // Enhanced state machine
+    localparam IDLE = 0, VALIDATE = 1, CALCULATE = 2, DONE = 3, 
+               ERROR = 4, RECOVER = 5;
+    reg [2:0] state = IDLE;
+    
+    // Error codes
+    localparam ERR_NONE = 0, ERR_INVALID_PRICE = 1, 
+               ERR_OVERFLOW = 2, ERR_DIVIDE_ZERO = 3,
+               ERR_TIMEOUT = 4;
+    
+    // Overflow detection registers
+    reg overflow_detected;
+    reg [63:0] prev_sum;
+    
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            // Reset handling
+            state <= IDLE;
+            sum <= 0;
+            moving_avg <= 0;
+            done <= 0;
+            error_code <= ERR_NONE;
+            error_active <= 0;
+            overflow_detected <= 0;
+        end else begin
+            // Default assignments
+            done <= 0;
+            
+            case (state)
+                IDLE: begin
+                    if (start) begin
+                        error_code <= ERR_NONE;
+                        error_active <= 0;
+                        state <= VALIDATE;
+                    end
+                end
+                
+                VALIDATE: begin
+                    // Input validation
+                    if (new_price > MAX_VALID_PRICE) begin
+                        error_code <= ERR_INVALID_PRICE;
+                        error_active <= 1;
+                        state <= ERROR;
+                    end else if (WINDOW == 0) begin
+                        error_code <= ERR_DIVIDE_ZERO;
+                        error_active <= 1;
+                        state <= ERROR;
+                    end else begin
+                        state <= CALCULATE;
+                        prev_sum <= sum;  // Save for overflow detection
+                    end
+                end
+                
+                CALCULATE: begin
+                    // Calculation with error checking
+                    sum <= sum + new_price - oldest_price;
+                    
+                    // Overflow detection
+                    if ((sum + new_price) < sum) begin
+                        error_code <= ERR_OVERFLOW;
+                        error_active <= 1;
+                        state <= ERROR;
+                    end else begin
+                        moving_avg <= sum / WINDOW;
+                        state <= DONE;
+                    end
+                end
+                
+                DONE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+                
+                ERROR: begin
+                    // Error handling state
+                    if (error_ack) begin
+                        state <= RECOVER;
+                    end
+                end
+                
+                RECOVER: begin
+                    // Error recovery actions
+                    case (error_code)
+                        ERR_OVERFLOW: begin
+                            sum <= prev_sum;  // Restore previous sum
+                        end
+                        
+                        ERR_INVALID_PRICE: begin
+                            // Skip this price update
+                        end
+                        
+                        default: begin
+                            // Generic recovery
+                        end
+                    endcase
+                    
+                    error_active <= 0;
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+Key capabilities:
+- Input value validation
+- Overflow detection
+- Error classification
+- Recovery mechanisms
+- Status reporting
+
+**Error Handling Capability Comparison**:
+
+| Error Handling Aspect | Minimal Approach | Robust Approach |
+|-----------------------|------------------|-----------------|
+| Error Detection | None/reset only | Comprehensive |
+| Error Classification | None | Multiple error codes |
+| Recovery Options | System reset | Error-specific recovery |
+| System Integration | Minimal | Status reporting |
+| Resource Overhead | None | Moderate |
+| State Overhead | None | 2-3 additional states |
+
+**Error Handling Categories**:
+
+1. **Input Validation**:
+   - Range checking for prices
+   - Parameter validation
+   - Protocol compliance
+   - Timing verification
+   - Data consistency checks
+
+2. **Computational Error Detection**:
+   - Overflow/underflow detection
+   - Division by zero prevention
+   - Precision loss monitoring
+   - Algorithm convergence checks
+   - Result range validation
+
+3. **Operational Error Handling**:
+   - Timeout detection
+   - Protocol violation response
+   - Synchronization error recovery
+   - Resource exhaustion handling
+   - System integrity verification
+
+4. **Error Reporting Mechanisms**:
+   - Error code generation
+   - Status register updating
+   - Error signal assertion
+   - Diagnostic information capture
+   - System notification
+
+5. **Recovery Strategies**:
+   - State rollback
+   - Safe value substitution
+   - Calculation restart
+   - Graceful degradation
+   - System reset initiation
+
+The current technical analysis system implements moderate error handling, focusing on critical aspects like overflow prevention through appropriate register sizing, while maintaining relatively simple state machines. This approach balances robustness with implementation complexity, appropriate for the reliable execution of well-defined calculations.
+
+#### Edge Case Management
+
+State machine design significantly affects edge case handling capabilities:
+
+**Basic Edge Case Approach**:
+
+```verilog
+// Simple state machine with minimal edge case handling
+module basic_rsi_fsm #(
+    parameter WINDOW = 14,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Simple state machine
+    localparam IDLE = 0, CALCULATE = 1, DONE = 2;
+    reg [1:0] state = IDLE;
+    
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (start)
+                    state <= CALCULATE;
+            end
+            
+            CALCULATE: begin
+                // Basic RSI calculation
+                if (price > prev_price)
+                    gain_sum <= gain_sum + (price - prev_price);
+                else if (price < prev_price)
+                    loss_sum <= loss_sum + (prev_price - price);
+                
+                // Calculate RSI
+                if (loss_sum > 0)
+                    rsi <= (100 * gain_sum) / (gain_sum + loss_sum);
+                else
+                    rsi <= 100;  // Simple edge case
+                
+                state <= DONE;
+            end
+            
+            DONE: begin
+                done <= 1;
+                state <= IDLE;
+            end
+        endcase
+    end
+endmodule
+```
+
+Key limitations:
+- Minimal edge case detection
+- Simple default handling
+- No special initialization
+- Limited boundary condition management
+- Potential for incorrect results
+
+**Comprehensive Edge Case Management**:
+
+```verilog
+// Enhanced state machine with robust edge case handling
+module robust_rsi_fsm #(
+    parameter WINDOW = 14,
+    parameter DW = 16
+)(
+    // Extended ports...
+);
+    // Enhanced state machine
+    localparam IDLE = 0, INIT = 1, WARMUP = 2, ACCUMULATE = 3, 
+               CALCULATE = 4, VALIDATE = 5, DONE = 6;
+    reg [2:0] state = IDLE;
+    
+    // Edge case tracking
+    reg initialization_complete = 0;
+    reg [4:0] sample_count = 0;
+    reg all_same_prices = 1;
+    reg extreme_values_detected = 0;
+    
+    // Bounds and validation
+    localparam MIN_VALID_CHANGE = 16'd2;  // Minimum significant change
+    
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (start) begin
+                    if (!initialization_complete) begin
+                        state <= INIT;
+                    end else begin
+                        state <= ACCUMULATE;
+                    end
+                end
+            end
+            
+            INIT: begin
+                // Proper initialization
+                gain_sum <= 0;
+                loss_sum <= 0;
+                prev_price <= price;
+                sample_count <= 1;
+                all_same_prices <= 1;
+                extreme_values_detected <= 0;
+                initialization_complete <= 1;
+                state <= IDLE;
+            end
+            
+            WARMUP: begin
+                // Special handling during initial window filling
+                if (sample_count < WINDOW) begin
+                    // Accumulate but don't calculate until window filled
+                    if (price > prev_price) begin
+                        gain_sum <= gain_sum + (price - prev_price);
+                        if ((price - prev_price) >= MIN_VALID_CHANGE)
+                            all_same_prices <= 0;
+                    end else if (price < prev_price) begin
+                        loss_sum <= loss_sum + (prev_price - price);
+                        if ((prev_price - price) >= MIN_VALID_CHANGE)
+                            all_same_prices <= 0;
+                    end
+                    
+                    prev_price <= price;
+                    sample_count <= sample_count + 1;
+                    state <= IDLE;
+                end else begin
+                    state <= CALCULATE;
+                end
+            end
+            
+            ACCUMULATE: begin
+                // Normal operation after initialization
+                if (price > prev_price) begin
+                    gain_sum <= gain_sum + (price - prev_price);
+                    if ((price - prev_price) >= MIN_VALID_CHANGE)
+                        all_same_prices <= 0;
+                end else if (price < prev_price) begin
+                    loss_sum <= loss_sum + (prev_price - price);
+                    if ((prev_price - price) >= MIN_VALID_CHANGE)
+                        all_same_prices <= 0;
+                end
+                
+                prev_price <= price;
+                state <= CALCULATE;
+            end
+            
+            CALCULATE: begin
+                // Edge case handling in calculation
+                if (all_same_prices) begin
+                    // No significant price changes
+                    rsi <= 50;  // Neutral RSI value
+                end else if (loss_sum == 0 && gain_sum > 0) begin
+                    // All gains, no losses
+                    rsi <= 100;  // Maximum RSI value
+                    extreme_values_detected <= 1;
+                end else if (gain_sum == 0 && loss_sum > 0) begin
+                    // All losses, no gains
+                    rsi <= 0;   // Minimum RSI value
+                    extreme_values_detected <= 1;
+                end else if (gain_sum + loss_sum > 0) begin
+                    // Normal calculation
+                    rsi <= (100 * gain_sum) / (gain_sum + loss_sum);
+                    extreme_values_detected <= 0;
+                end else begin
+                    // No movement at all
+                    rsi <= 50;  // Neutral RSI value
+                }
+                
+                state <= VALIDATE;
+            end
+            
+            VALIDATE: begin
+                // Result validation
+                if (rsi > 100) begin
+                    rsi <= 100;  // Clamp to valid range
+                end else if (rsi < 0) begin
+                    rsi <= 0;    // Clamp to valid range
+                end
+                
+                state <= DONE;
+            end
+            
+            DONE: begin
+                done <= 1;
+                state <= IDLE;
+            end
+        endcase
+    end
+endmodule
+```
+
+Key capabilities:
+- Proper initialization handling
+- Warm-up period management
+- Multiple edge case detection
+- Special condition handling
+- Result validation
+
+**Edge Case Handling Comparison**:
+
+| Edge Case Category | Basic Approach | Comprehensive Approach |
+|--------------------|----------------|------------------------|
+| Initialization | Simple reset | Phased initialization |
+| No Price Movement | Limited handling | Explicit detection |
+| All Gains/Losses | Partial handling | Complete handling |
+| Boundary Values | None | Result clamping |
+| Minimum Movement | None | Significance threshold |
+| Warm-up Period | None | Explicit handling |
+
+**Critical Edge Cases in Technical Analysis**:
+
+1. **Initialization Period**:
+   - Insufficient data for calculation
+   - First valid result determination
+   - Handling partial windows
+   - Initial reference values
+   - Warm-up period indication
+
+2. **Extreme Market Conditions**:
+   - All prices increasing/decreasing
+   - No price movement periods
+   - Minimum significant movement
+   - Maximum/minimum value handling
+   - Result boundary conditions
+
+3. **Calculation Edge Cases**:
+   - Division by zero prevention
+   - Overflow/underflow conditions
+   - Minimum precision requirements
+   - Insignificant change filtering
+   - Result range validation
+
+4. **Operational Transitions**:
+   - Market open/close handling
+   - Trading session boundaries
+   - Data gap management
+   - Instrument suspension periods
+   - Calendar event adjustments
+
+The current technical analysis system implements moderate edge case handling, focusing on critical aspects like division by zero protection and extreme value management, while maintaining relatively straightforward state machines. This approach balances robustness with implementation complexity, appropriate for the reliable execution of well-defined calculations.
+
+#### Resource Utilization Impact
+
+State machine complexity directly affects resource utilization:
+
+**Simple State Machine Resources**:
+
+```verilog
+// Simple 3-state machine
+localparam IDLE = 0, CALCULATE = 1, DONE = 2;
+reg [1:0] state = IDLE;  // 2-bit state register
+```
+
+Resource requirements:
+- State Register: 2 bits
+- Next State Logic: ~4-6 LUTs
+- Output Logic: ~4-8 LUTs
+- Total Flip-Flops: 2 + output registers
+- Total LUTs: ~10-15
+- Control Signals: 1-2
+
+**Complex State Machine Resources**:
+
+```verilog
+// Complex state machine
+localparam IDLE = 0, INIT = 1, CHECK = 2, PROCESS = 3, 
+           CALCULATE = 4, VALIDATE = 5, DONE = 6, ERROR = 7;
+reg [2:0] state = IDLE;  // 3-bit state register
+
+// Additional control registers
+reg initialization_complete = 0;
+reg [4:0] sample_count = 0;
+reg [2:0] error_code = 0;
+reg processing_phase = 0;
+```
+
+Resource requirements:
+- State Register: 3 bits
+- Next State Logic: ~12-20 LUTs
+- Output Logic: ~15-25 LUTs
+- Additional Control Registers: ~10-15 bits
+- Total Flip-Flops: 15-20 + output registers
+- Total LUTs: ~30-50
+- Control Signals: 5-10
+
+**State Encoding Impact**:
+
+| Encoding Method | State Bits | LUT Usage | Characteristics |
+|-----------------|------------|-----------|-----------------|
+| Binary (default) | log2(states) | Moderate | Balanced |
+| One-hot | states | Higher | Clear, fast |
+| Gray code | log2(states) | Moderate | Glitch-free |
+| Custom | varies | Varies | Application-specific |
+
+For an 8-state machine:
+- Binary: 3 bits, ~15-25 LUTs
+- One-hot: 8 bits, ~20-30 LUTs
+- Gray code: 3 bits, ~15-25 LUTs
+
+**State Machine Scaling Analysis**:
+
+| State Count | Register Bits | LUT Usage | Control FF | Total Resources |
+|-------------|---------------|-----------|------------|-----------------|
+| 2-4 states | 2 bits | 8-15 LUTs | 2-4 bits | Minimal |
+| 5-8 states | 3 bits | 15-30 LUTs | 5-10 bits | Low |
+| 9-16 states | 4 bits | 25-50 LUTs | 10-20 bits | Moderate |
+| 17-32 states | 5 bits | 40-80 LUTs | 15-30 bits | High |
+| 32+ states | 6+ bits | 70-150+ LUTs | 20-50+ bits | Very High |
+
+**Feature Resource Impact**:
+
+| Feature | Register Impact | LUT Impact | Overall Impact |
+|---------|----------------|------------|----------------|
+| Error Detection | 3-5 bits | 5-10 LUTs | Low-Moderate |
+| Error Recovery | 5-10 bits | 10-20 LUTs | Moderate |
+| Edge Case Handling | 5-10 bits | 10-20 LUTs | Moderate |
+| Status Reporting | 3-5 bits | 5-10 LUTs | Low-Moderate |
+| Configuration Options | 3-5 bits | 10-15 LUTs | Moderate |
+| Advanced Control | 5-10 bits | 15-25 LUTs | Moderate-High |
+
+**Resource Optimization Techniques**:
+
+1. **State Minimization**:
+   ```verilog
+   // Combining similar states
+   if (state == CHECK || state == VALIDATE) begin
+       // Common functionality
+       if (condition1)
+           next_state = PROCESS;
+       else if (condition2)
+           next_state = ERROR;
+   end
+   ```
+   - Merge states with similar transitions
+   - Eliminate unnecessary states
+   - Simplify transition conditions
+   - Reduce state register width
+   - Minimize next-state logic
+
+2. **Efficient State Encoding**:
+   ```verilog
+   // Optimized state encoding for common transitions
+   localparam IDLE = 3'b000, PROC1 = 3'b001, PROC2 = 3'b011;
+   ```
+   - Choose encoding to minimize bit changes
+   - Position related states with similar encodings
+   - Optimize for common transitions
+   - Consider FPGA architecture
+   - Balance encoding complexity
+
+The technical analysis system balances state machine complexity with resource utilization, implementing relatively simple state machines with focused functionality. This approach minimizes resource usage while providing the necessary features for reliable indicator calculation and trading signal generation.
+
+#### Verification Complexity Considerations
+
+State machine complexity significantly impacts verification effort:
+
+**Simple State Machine Verification**:
+
+```verilog
+// Simple 3-state machine testbench
+module simple_ma_fsm_tb;
+    // Testbench signals
+    reg clk = 0;
+    reg rst = 0;
+    reg start = 0;
+    reg [15:0] new_price = 0;
+    reg [15:0] oldest_price = 0;
+    wire [31:0] moving_avg;
+    wire done;
+    
+    // DUT instantiation
+    moving_average_fsm dut (
+        .clk(clk),
+        .rst(rst),
+        .start(start),
+        .new_price(new_price),
+        .oldest_price(oldest_price),
+        .moving_avg(moving_avg),
+        .done(done)
+    );
+    
+    // Clock generation
+    always #5 clk = ~clk;
+    
+    // Test sequence
+    initial begin
+        // Reset
+        rst = 1;
+        #20 rst = 0;
+        
+        // Test case 1: Basic calculation
+        #10 new_price = 100;
+        oldest_price = 80;
+        start = 1;
+        #10 start = 0;
+        
+        // Wait for completion
+        wait(done);
+        
+        // Verify result
+        if (moving_avg == (100-80)/20)
+            $display("Test passed");
+        else
+            $display("Test failed");
+        
+        // End simulation
+        #100 $finish;
+    end
+endmodule
+```
+
+Verification characteristics:
+- Few test cases required
+- Simple expected outcomes
+- Linear execution path
+- Limited state coverage
+- Straightforward assertions
+
+**Complex State Machine Verification**:
+
+```verilog
+// Complex state machine testbench
+module complex_rsi_fsm_tb;
+    // Testbench signals
+    reg clk = 0;
+    reg rst = 0;
+    reg start = 0;
+    reg [15:0] price = 0;
+    wire [7:0] rsi;
+    wire done;
+    wire [2:0] error_code;
+    wire error_active;
+    
+    // DUT instantiation
+    complex_rsi_fsm dut (
+        .clk(clk),
+        .rst(rst),
+        .start(start),
+        .price(price),
+        .rsi(rsi),
+        .done(done),
+        .error_code(error_code),
+        .error_active(error_active)
+    );
+    
+    // Clock generation
+    always #5 clk = ~clk;
+    
+    // State monitoring
+    reg [2:0] prev_state;
+    always @(posedge clk)
+        prev_state <= dut.state;
+    
+    // Test configuration
+    int test_cases_run = 0;
+    int test_cases_passed = 0;
+    
+    // Assertion monitoring
+    always @(posedge clk) begin
+        // State transition checks
+        if (dut.state != prev_state) begin
+            $display("State transition: %d -> %d at time %t", 
+                    prev_state, dut.state, $time);
+            
+            // Validate legal transitions
+            case (prev_state)
+                0: assert(dut.state inside {1, 2, 3}) 
+                    else $error("Invalid transition from IDLE");
+                // Additional state checks...
+            endcase
+        end
+        
+        // Data integrity checks
+        if (dut.gain_sum + dut.loss_sum < dut.gain_sum)
+            $error("Overflow detected in accumulation");
+        
+        // Protocol checks
+        if (done && dut.state != 6)
+            $error("Done signal asserted in invalid state");
+    end
+    
+    // Define extensive test cases
+    typedef struct {
+        string name;
+        bit reset_first;
+        int num_prices;
+        int price_sequence[];
+        bit expect_error;
+        int expected_rsi;
+        int tolerance;
+    } TestCase;
+    
+    TestCase test_cases[] = {
+        // Normal operation
+        {name: "Basic calculation", reset_first: 1, num_prices: 15,
+         price_sequence: '{100, 101, 102, 101, 103, 102, 104, 103, 105, 104,
+                          106, 105, 107, 106, 108},
+         expect_error: 0, expected_rsi: 50, tolerance: 2},
+         
+        // Edge case: All rising prices
+        {name: "All rising", reset_first: 1, num_prices: 15,
+         price_sequence: '{100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+                          110, 111, 112, 113, 114},
+         expect_error: 0, expected_rsi: 100, tolerance: 0},
+         
+        // Edge case: All falling prices
+        {name: "All falling", reset_first: 1, num_prices: 15,
+         price_sequence: '{114, 113, 112, 111, 110, 109, 108, 107, 106, 105,
+                          104, 103, 102, 101, 100},
+         expect_error: 0, expected_rsi: 0, tolerance: 0},
+         
+        // Edge case: No price change
+        {name: "No change", reset_first: 1, num_prices: 15,
+         price_sequence: '{100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+                          100, 100, 100, 100, 100},
+         expect_error: 0, expected_rsi: 50, tolerance: 0},
+         
+        // Error case: Invalid price
+        {name: "Invalid price", reset_first: 1, num_prices: 5,
+         price_sequence: '{100, 65535, 102, 103, 104},
+         expect_error: 1, expected_rsi: 0, tolerance: 0}
+    };
+    
+    // Test execution task
+    task run_test_case(TestCase tc);
+        $display("Running test case: %s", tc.name);
+        test_cases_run++;
+        
+        if (tc.reset_first) begin
+            rst = 1;
+            #20 rst = 0;
+            #10;
+        end
+        
+        // Apply price sequence
+        for (int i = 0; i < tc.num_prices; i++) begin
+            price = tc.price_sequence[i];
+            start = 1;
+            #10 start = 0;
+            
+            // Wait for completion or error
+            wait(done || error_active);
+            #10;
+        end
+        
+        // Verify results
+        if (tc.expect_error && error_active) begin
+            $display("Test passed: Expected error detected");
+            test_cases_passed++;
+        end else if (!tc.expect_error && !error_active &&
+                    (rsi >= tc.expected_rsi - tc.tolerance) &&
+                    (rsi <= tc.expected_rsi + tc.tolerance)) begin
+            $display("Test passed: RSI = %d (expected %d +/- %d)",
+                    rsi, tc.expected_rsi, tc.tolerance);
+            test_cases_passed++;
+        end else begin
+            $display("Test failed: RSI = %d, error = %d (expected RSI = %d +/- %d, error = %d)",
+                    rsi, error_active, tc.expected_rsi, tc.tolerance, tc.expect_error);
+        end
+    endtask
+    
+    // Test sequence
+    initial begin
+        // Run all test cases
+        foreach (test_cases[i])
+            run_test_case(test_cases[i]);
+        
+        // Report results
+        $display("Tests complete: %d/%d passed", test_cases_passed, test_cases_run);
+        #100 $finish;
+    end
+endmodule
+```
+
+Verification characteristics:
+- Numerous test cases required
+- Complex expected outcomes
+- Multiple execution paths
+- Comprehensive state coverage
+- Advanced assertions
+
+**Verification Complexity Factors**:
+
+| Complexity Factor | Simple FSM | Complex FSM |
+|-------------------|------------|-------------|
+| State Count | 3-4 states | 8+ states |
+| Transition Paths | 3-5 paths | 15+ paths |
+| Test Cases | 2-5 cases | 10-20+ cases |
+| Edge Cases | 1-2 cases | 5-10+ cases |
+| Assertions | 2-5 assertions | 10-20+ assertions |
+| Simulation Time | Short | Extended |
+
+**Verification Methodologies for Different Complexities**:
+
+1. **Directed Testing (Simple FSMs)**:
+   - Manual test case definition
+   - Predictable execution paths
+   - Limited state space exploration
+   - Focused result verification
+   - Minimal testbench infrastructure
+
+2. **Coverage-Driven Verification (Complex FSMs)**:
+   - Systematic coverage goals
+   - State/transition coverage
+   - Comprehensive test plan
+   - Automated test generation
+   - Advanced testbench architecture
+
+3. **Formal Verification (Both)**:
+   - Property specification
+   - Exhaustive state space analysis
+   - Automatic counterexample generation
+   - Comprehensive verification
+   - Tool-specific implementation
+
+**State Machine Verification Metrics**:
+
+| Verification Metric | Calculation | Simple Example | Complex Example |
+|---------------------|-------------|----------------|-----------------|
+| State Coverage | states_visited / total_states | 3/3 (100%) | 6/8 (75%) |
+| Transition Coverage | transitions_covered / possible_transitions | 3/3 (100%) | 12/20 (60%) |
+| Path Coverage | paths_tested / possible_paths | 1/1 (100%) | 4/10+ (40%) |
+| Edge Case Coverage | edge_cases_tested / identified_edge_cases | 1/2 (50%) | 6/10 (60%) |
+| Code Coverage | lines_executed / total_lines | 15/20 (75%) | 80/150 (53%) |
+
+The current technical analysis system balances state machine complexity with verification effort, implementing relatively straightforward state machines that can be thoroughly verified with reasonable effort. This approach ensures system reliability while maintaining manageable verification complexity.
+
+#### Recommended Design Patterns
+
+Based on the analysis of state machine complexity tradeoffs, several recommended design patterns emerge:
+
+**1. Layered State Machine Pattern**:
+```verilog
+module layered_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Top-level control state machine (simple)
+    localparam IDLE = 0, ACTIVE = 1, DONE = 2;
+    reg [1:0] control_state = IDLE;
+    
+    // Processing state machine (more complex)
+    localparam INIT = 0, PROC1 = 1, PROC2 = 2, PROC3 = 3, FINISH = 4;
+    reg [2:0] proc_state = INIT;
+    
+    // Top-level control FSM
+    always @(posedge clk) begin
+        case (control_state)
+            IDLE: begin
+                if (start) begin
+                    control_state <= ACTIVE;
+                    proc_state <= INIT;  // Initialize processing FSM
+                end
+            end
+            
+            ACTIVE: begin
+                // Processing FSM completion detection
+                if (proc_state == FINISH) begin
+                    control_state <= DONE;
+                end
+            end
+            
+            DONE: begin
+                done <= 1;
+                control_state <= IDLE;
+            end
+        endcase
+    end
+    
+    // Processing FSM - only active when in ACTIVE control state
+    always @(posedge clk) begin
+        if (control_state == ACTIVE) begin
+            case (proc_state)
+                INIT: begin
+                    // Initialization
+                    proc_state <= PROC1;
+                end
+                
+                PROC1, PROC2, PROC3: begin
+                    // Processing steps
+                    // ...
+                    proc_state <= proc_state + 1;
+                end
+                
+                FINISH: begin
+                    // Finalization
+                    // No state transition - detected by control FSM
+                end
+            endcase
+        end
+    end
+endmodule
+```
+
+This pattern provides:
+- Separation of control and processing logic
+- Simple top-level state machine for interface
+- Detailed processing state machine for functionality
+- Clear boundary between interface and implementation
+- Simplified verification of each layer
+
+**2. Modular State Machine Pattern**:
+```verilog
+module modular_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Core functionality in separate module
+    wire internal_done;
+    wire [31:0] internal_result;
+    
+    calculation_core calculator (
+        .clk(clk),
+        .rst(rst),
+        .start(internal_start),
+        .new_price(new_price),
+        .oldest_price(oldest_price),
+        .result(internal_result),
+        .done(internal_done)
+    );
+    
+    // Interface state machine
+    localparam IDLE = 0, VALIDATE = 1, CALCULATE = 2, PROCESS = 3, DONE = 4;
+    reg [2:0] state = IDLE;
+    
+    // Interface FSM
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (start)
+                    state <= VALIDATE;
+            end
+            
+            VALIDATE: begin
+                // Input validation
+                if (valid_inputs)
+                    state <= CALCULATE;
+                else
+                    state <= DONE;  // Skip calculation
+            end
+            
+            CALCULATE: begin
+                // Trigger core calculation
+                internal_start <= 1;
+                state <= PROCESS;
+            end
+            
+            PROCESS: begin
+                internal_start <= 0;
+                if (internal_done) begin
+                    moving_avg <= internal_result;
+                    state <= DONE;
+                end
+            end
+            
+            DONE: begin
+                done <= 1;
+                state <= IDLE;
+            end
+        endcase
+    end
+endmodule
+```
+
+This pattern provides:
+- Clean separation of interface and implementation
+- Reusable calculation core
+- Simplified interface state machine
+- Focused testing of each component
+- Improved maintainability
+
+**3. Table-Driven State Machine Pattern**:
+```verilog
+module table_driven_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // State definitions
+    localparam STATE_COUNT = 4;
+    localparam IDLE = 0, CALCULATE = 1, FILTER = 2, DONE = 3;
+    
+    // Transition table [current_state][input] = next_state
+    reg [1:0] next_state_table [0:STATE_COUNT-1][0:1] = {
+        {IDLE,      CALCULATE},  // IDLE transitions
+        {CALCULATE, FILTER},     // CALCULATE transitions
+        {FILTER,    DONE},       // FILTER transitions
+        {DONE,      IDLE}        // DONE transitions
+    };
+    
+    // Output table [state] = {output1, output2, ...}
+    reg [2:0] output_table [0:STATE_COUNT-1] = {
+        3'b000,  // IDLE outputs
+        3'b010,  // CALCULATE outputs
+        3'b100,  // FILTER outputs
+        3'b001   // DONE outputs
+    };
+    
+    // State register
+    reg [1:0] state = IDLE;
+    
+    // Next state logic
+    always @(posedge clk) begin
+        if (rst)
+            state <= IDLE;
+        else
+            state <= next_state_table[state][start];
+    end
+    
+    // Output logic
+    always @(posedge clk) begin
+        {calculating, filtering, done} <= output_table[state];
+    end
+    
+    // Data path (separate from state control)
+    always @(posedge clk) begin
+        if (calculating)
+            sum <= sum + new_price - oldest_price;
+            
+        if (filtering)
+            moving_avg <= sum / WINDOW;
+    end
+endmodule
+```
+
+This pattern provides:
+- Clear separation of control and datapath
+- Tabular representation of state transitions
+- Simplified maintenance of complex state machines
+- Explicit output encoding
+- Improved readability for complex machines
+
+**4. Error-Handling State Machine Pattern**:
+```verilog
+module error_handling_fsm #(
+    parameter WINDOW = 20,
+    parameter DW = 16
+)(
+    // Ports...
+);
+    // Main processing state machine
+    localparam IDLE = 0, CALCULATE = 1, DONE = 2;
+    reg [1:0] state = IDLE;
+    
+    // Error handling state machine
+    localparam ERR_NONE = 0, ERR_DETECTED = 1, ERR_HANDLING = 2, ERR_RECOVERY = 3;
+    reg [1:0] error_state = ERR_NONE;
+    
+    // Error code register
+    reg [2:0] error_code = 0;
+    
+    // Main FSM only active when no errors
+    always @(posedge clk) begin
+        if (error_state == ERR_NONE) begin
+            case (state)
+                IDLE: begin
+                    if (start)
+                        state <= CALCULATE;
+                end
+                
+                CALCULATE: begin
+                    // Check for error conditions
+                    if (new_price > MAX_VALID_PRICE) begin
+                        error_state <= ERR_DETECTED;
+                        error_code <= 3'b001;  // Invalid price
+                    end else if (WINDOW == 0) begin
+                        error_state <= ERR_DETECTED;
+                        error_code <= 3'b010;  // Divide by zero
+                    end else begin
+                        // Normal calculation
+                        sum <= sum + new_price - oldest_price;
+                        moving_avg <= sum / WINDOW;
+                        state <= DONE;
+                    end
+                end
+                
+                DONE: begin
+                    done <= 1;
+                    state <= IDLE;
+                end
+            endcase
+        end
+    end
+    
+    // Error handling FSM
+    always @(posedge clk) begin
+        case
+manu was here
